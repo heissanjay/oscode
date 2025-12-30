@@ -59,9 +59,10 @@ type Model struct {
 	ready  bool
 
 	// Components
-	textarea textarea.Model
-	viewport viewport.Model
-	spinner  spinner.Model
+	textarea  textarea.Model
+	viewport  viewport.Model
+	spinner   spinner.Model
+	selection *SelectionModel
 
 	// Conversation
 	messages     []DisplayMessage
@@ -74,6 +75,10 @@ type Model struct {
 	tokens    int
 	cost      float64
 	sessionID string
+
+	// Available options
+	availableModels    []SelectionItem
+	availableProviders []SelectionItem
 
 	// Permission handling
 	permissionRequest *PermissionRequest
@@ -93,49 +98,69 @@ type Model struct {
 	errorMsg string
 
 	// Event handlers (set by app)
-	onSubmit     func(string) tea.Cmd
-	onPermission func(bool)
-	onQuit       func()
+	onSubmit         func(string) tea.Cmd
+	onPermission     func(bool)
+	onQuit           func()
+	onModelChange    func(string)
+	onProviderChange func(string)
 }
 
 // NewModel creates a new UI model
 func NewModel() Model {
-	// Create textarea for input
+	// Create textarea for input - single line, clean look
 	ta := textarea.New()
-	ta.Placeholder = "Type your message... (Enter to send, Ctrl+J for newline)"
+	ta.Placeholder = "Message oscode..."
 	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.SetWidth(80)
-	ta.SetHeight(3)
+	ta.SetHeight(1) // Single line by default
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#4B5563"))
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB"))
+	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetEnabled(false)
 	ta.Focus()
 
-	// Create spinner
+	// Create smooth spinner
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
-		Frames: SpinnerFrames,
+		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
 		FPS:    time.Millisecond * 80,
 	}
-	s.Style = ToolSpinnerStyle
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706"))
 
 	// Create viewport for messages
 	vp := viewport.New(80, 20)
-	vp.Style = lipgloss.NewStyle()
+	vp.Style = lipgloss.NewStyle().Padding(0, 1)
 
 	return Model{
 		state:        StateInput,
 		textarea:     ta,
 		viewport:     vp,
 		spinner:      s,
+		selection:    NewSelectionModel(),
 		messages:     make([]DisplayMessage, 0),
 		history:      make([]string, 0),
 		historyIndex: -1,
 		width:        80,
 		height:       24,
 		ready:        true, // Start ready immediately
+		availableModels: []SelectionItem{
+			{ID: "claude-sonnet-4-20250514", Label: "claude-sonnet-4", Description: "Best for coding tasks", Selected: true},
+			{ID: "claude-opus-4-20250514", Label: "claude-opus-4", Description: "Most capable"},
+			{ID: "claude-haiku-3-5-20241022", Label: "claude-haiku-3.5", Description: "Fast and efficient"},
+			{ID: "gpt-4o", Label: "gpt-4o", Description: "OpenAI flagship"},
+			{ID: "gpt-4o-mini", Label: "gpt-4o-mini", Description: "Fast OpenAI model"},
+			{ID: "o1-preview", Label: "o1-preview", Description: "Reasoning model"},
+		},
+		availableProviders: []SelectionItem{
+			{ID: "anthropic", Label: "Anthropic", Description: "Claude models", Selected: true},
+			{ID: "openai", Label: "OpenAI", Description: "GPT models"},
+		},
 	}
 }
 
@@ -144,6 +169,74 @@ func (m *Model) SetHandlers(onSubmit func(string) tea.Cmd, onPermission func(boo
 	m.onSubmit = onSubmit
 	m.onPermission = onPermission
 	m.onQuit = onQuit
+}
+
+// SetChangeHandlers sets model/provider change handlers
+func (m *Model) SetChangeHandlers(onModelChange func(string), onProviderChange func(string)) {
+	m.onModelChange = onModelChange
+	m.onProviderChange = onProviderChange
+}
+
+// ShowModelSelection shows the model selection menu
+func (m *Model) ShowModelSelection() {
+	// Update selected state based on current model
+	items := make([]SelectionItem, len(m.availableModels))
+	for i, item := range m.availableModels {
+		items[i] = item
+		items[i].Selected = item.ID == m.model
+	}
+	m.selection.Show(SelectionModelMenu, "Select Model", items)
+}
+
+// ShowProviderSelection shows the provider selection menu
+func (m *Model) ShowProviderSelection() {
+	// Update selected state based on current provider
+	items := make([]SelectionItem, len(m.availableProviders))
+	for i, item := range m.availableProviders {
+		items[i] = item
+		items[i].Selected = item.ID == m.provider
+	}
+	m.selection.Show(SelectionProviderMenu, "Select Provider", items)
+}
+
+// ShowHelpMenu shows the help menu
+func (m *Model) ShowHelpMenu() {
+	items := []SelectionItem{
+		{ID: "clear", Label: "/clear", Description: "Clear conversation"},
+		{ID: "model", Label: "/model", Description: "Switch model"},
+		{ID: "provider", Label: "/provider", Description: "Switch provider"},
+		{ID: "compact", Label: "/compact", Description: "Compact conversation"},
+		{ID: "cost", Label: "/cost", Description: "Show token usage"},
+		{ID: "vim", Label: "/vim", Description: "Toggle vim mode"},
+		{ID: "exit", Label: "/exit", Description: "Exit application"},
+	}
+	m.selection.Show(SelectionHelpMenu, "Commands", items)
+}
+
+// IsSelectionActive returns whether a selection menu is active
+func (m *Model) IsSelectionActive() bool {
+	return m.selection != nil && m.selection.IsActive()
+}
+
+// ShowCommandPalette shows the command palette for autocomplete
+func (m *Model) ShowCommandPalette(filter string) {
+	items := []SelectionItem{
+		{ID: "help", Label: "/help", Description: "Show commands"},
+		{ID: "model", Label: "/model", Description: "Switch model"},
+		{ID: "provider", Label: "/provider", Description: "Switch provider"},
+		{ID: "clear", Label: "/clear", Description: "Clear conversation"},
+		{ID: "compact", Label: "/compact", Description: "Compact conversation"},
+		{ID: "cost", Label: "/cost", Description: "Show token usage"},
+		{ID: "vim", Label: "/vim", Description: "Toggle vim mode"},
+		{ID: "verbose", Label: "/verbose", Description: "Toggle verbose"},
+		{ID: "exit", Label: "/exit", Description: "Exit application"},
+	}
+	m.selection.Show(SelectionHelpMenu, "Commands", items)
+	if filter != "" {
+		for _, r := range filter {
+			m.selection.AddFilterChar(r)
+		}
+	}
 }
 
 // SetProviderInfo updates the provider and model info
@@ -284,44 +377,102 @@ func (m *Model) updateViewport() {
 func (m *Model) renderMessages() string {
 	var sb strings.Builder
 
+	// Styles for Claude Code-like appearance
+	userPromptStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#D97706")).
+		Bold(true)
+
+	userTextStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#E5E7EB"))
+
+	assistantStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#E5E7EB"))
+
+	toolNameStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#6366F1")).
+		Bold(true)
+
+	toolRunningStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#9CA3AF")).
+		Italic(true)
+
+	toolResultStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#6B7280"))
+
+	successIcon := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#10B981")).
+		Render("✓")
+
+	errorIcon := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#EF4444")).
+		Render("✗")
+
+	systemStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#9CA3AF")).
+		Italic(true)
+
+	errorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#EF4444"))
+
 	for _, msg := range m.messages {
 		switch msg.Type {
 		case MessageTypeUser:
-			sb.WriteString(InputPromptStyle.Render("> "))
-			sb.WriteString(UserMessageStyle.Render(msg.Content))
+			sb.WriteString(userPromptStyle.Render("> "))
+			sb.WriteString(userTextStyle.Render(msg.Content))
 			sb.WriteString("\n\n")
 
 		case MessageTypeAssistant:
-			sb.WriteString(AssistantMessageStyle.Render(msg.Content))
+			sb.WriteString(assistantStyle.Render(msg.Content))
 			sb.WriteString("\n\n")
 
 		case MessageTypeTool:
-			if msg.IsError {
-				sb.WriteString(ErrorStyle.Render("✗ "))
-			} else {
-				sb.WriteString(SuccessStyle.Render("○ "))
-			}
-			sb.WriteString(ToolNameStyle.Render(msg.ToolName))
-			if msg.Content != "" {
+			if msg.Content == "Running..." {
+				// Tool in progress
+				sb.WriteString("  ")
+				sb.WriteString(m.spinner.View())
+				sb.WriteString(" ")
+				sb.WriteString(toolNameStyle.Render(msg.ToolName))
+				sb.WriteString(" ")
+				sb.WriteString(toolRunningStyle.Render("running..."))
 				sb.WriteString("\n")
-				sb.WriteString(ToolResultStyle.Render(truncate(msg.Content, 500)))
+			} else {
+				// Tool completed
+				if msg.IsError {
+					sb.WriteString("  ")
+					sb.WriteString(errorIcon)
+				} else {
+					sb.WriteString("  ")
+					sb.WriteString(successIcon)
+				}
+				sb.WriteString(" ")
+				sb.WriteString(toolNameStyle.Render(msg.ToolName))
+				if msg.Content != "" && msg.Content != "Running..." {
+					// Show truncated result
+					result := truncate(msg.Content, 200)
+					if result != "" {
+						sb.WriteString("\n    ")
+						sb.WriteString(toolResultStyle.Render(result))
+					}
+				}
+				sb.WriteString("\n")
 			}
-			sb.WriteString("\n")
 
 		case MessageTypeSystem:
-			sb.WriteString(SystemMessageStyle.Render(msg.Content))
+			sb.WriteString(systemStyle.Render("  " + msg.Content))
 			sb.WriteString("\n\n")
 
 		case MessageTypeError:
-			sb.WriteString(ErrorStyle.Render("Error: " + msg.Content))
+			sb.WriteString(errorStyle.Render("  Error: " + msg.Content))
 			sb.WriteString("\n\n")
 		}
 	}
 
-	// Add streaming content
+	// Add streaming content with cursor
 	if m.isStreaming && m.streamingContent != "" {
-		sb.WriteString(AssistantMessageStyle.Render(m.streamingContent))
-		sb.WriteString(ToolSpinnerStyle.Render("▌"))
+		sb.WriteString(assistantStyle.Render(m.streamingContent))
+		sb.WriteString(lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#D97706")).
+			Render("▌"))
 		sb.WriteString("\n")
 	}
 
@@ -340,7 +491,6 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		textarea.Blink,
 		m.spinner.Tick,
-		tea.EnterAltScreen,
 	)
 }
 

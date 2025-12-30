@@ -163,10 +163,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case spinner.TickMsg:
+		// Always update spinner and keep it ticking during processing/streaming
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
 		if m.state == StateProcessing || m.isStreaming {
-			var cmd tea.Cmd
-			m.spinner, cmd = m.spinner.Update(msg)
 			cmds = append(cmds, cmd)
+			// Force viewport update to show spinner animation in tool messages
+			m.updateViewport()
 		}
 		return m, tea.Batch(cmds...)
 
@@ -184,6 +187,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
+
+	// Handle selection menu first if active
+	if m.IsSelectionActive() {
+		return m.handleSelectionKeys(msg)
+	}
 
 	// Handle permission prompt state
 	if m.state == StatePermissionPrompt {
@@ -255,6 +263,72 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle slash commands interactively
+		if strings.HasPrefix(input, "/") {
+			m.textarea.Reset()
+			cmd := strings.TrimPrefix(input, "/")
+			cmd = strings.ToLower(strings.TrimSpace(cmd))
+
+			// Get command name (first word)
+			parts := strings.SplitN(cmd, " ", 2)
+			cmdName := parts[0]
+
+			switch cmdName {
+			case "model", "m":
+				m.ShowModelSelection()
+				return m, nil
+
+			case "provider", "p":
+				m.ShowProviderSelection()
+				return m, nil
+
+			case "help", "h", "?":
+				m.ShowHelpMenu()
+				return m, nil
+
+			case "clear", "cls":
+				m.ClearMessages()
+				m.AddSystemMessage("Conversation cleared")
+				return m, nil
+
+			case "exit", "quit", "q":
+				if m.onQuit != nil {
+					m.onQuit()
+				}
+				return m, tea.Quit
+
+			case "vim":
+				m.vimMode = !m.vimMode
+				if m.vimMode {
+					m.AddSystemMessage("Vim mode enabled")
+				} else {
+					m.AddSystemMessage("Vim mode disabled")
+				}
+				return m, nil
+
+			case "verbose", "v":
+				m.verbose = !m.verbose
+				if m.verbose {
+					m.AddSystemMessage("Verbose mode enabled")
+				} else {
+					m.AddSystemMessage("Verbose mode disabled")
+				}
+				return m, nil
+
+			case "cost":
+				m.AddSystemMessage("Token usage: " + formatTokenCount(m.tokens) + " tokens")
+				return m, nil
+
+			case "compact":
+				m.AddSystemMessage("Conversation compacting not yet implemented")
+				return m, nil
+
+			default:
+				m.AddSystemMessage("Unknown command: /" + cmdName + " (use /help)")
+				return m, nil
+			}
+		}
+
 		// Add to history
 		m.history = append(m.history, input)
 		m.historyIndex = len(m.history)
@@ -268,6 +342,9 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Set processing state
 		m.SetStreaming(true)
 
+		// Start spinner ticking
+		cmds = append(cmds, m.spinner.Tick)
+
 		// Call submit handler
 		if m.onSubmit != nil {
 			cmd := m.onSubmit(input)
@@ -278,6 +355,17 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+j": // Insert newline
 		m.textarea.InsertString("\n")
+		return m, nil
+
+	case "tab":
+		// Show command palette if input starts with /
+		input := m.textarea.Value()
+		if strings.HasPrefix(input, "/") {
+			filter := strings.TrimPrefix(input, "/")
+			m.ShowCommandPalette(filter)
+			return m, nil
+		}
+		// Otherwise, just pass through
 		return m, nil
 
 	case "up":
@@ -362,6 +450,102 @@ func (m Model) handlePermissionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m Model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "up", "k":
+		m.selection.MoveUp()
+		return m, nil
+
+	case "down", "j":
+		m.selection.MoveDown()
+		return m, nil
+
+	case "enter":
+		item := m.selection.Select()
+		if item != nil {
+			selState := m.selection.State
+			m.selection.Hide()
+
+			switch selState {
+			case SelectionModelMenu:
+				m.model = item.ID
+				if m.onModelChange != nil {
+					m.onModelChange(item.ID)
+				}
+				m.AddSystemMessage("Model set to: " + item.Label)
+
+			case SelectionProviderMenu:
+				m.provider = item.ID
+				if m.onProviderChange != nil {
+					m.onProviderChange(item.ID)
+				}
+				m.AddSystemMessage("Provider set to: " + item.Label)
+
+			case SelectionHelpMenu:
+				// Clear the textarea first
+				m.textarea.Reset()
+
+				// Execute the selected command
+				switch item.ID {
+				case "help":
+					m.ShowHelpMenu()
+				case "clear":
+					m.ClearMessages()
+					m.AddSystemMessage("Conversation cleared")
+				case "model":
+					m.ShowModelSelection()
+				case "provider":
+					m.ShowProviderSelection()
+				case "vim":
+					m.vimMode = !m.vimMode
+					if m.vimMode {
+						m.AddSystemMessage("Vim mode enabled")
+					} else {
+						m.AddSystemMessage("Vim mode disabled")
+					}
+				case "verbose":
+					m.verbose = !m.verbose
+					if m.verbose {
+						m.AddSystemMessage("Verbose mode enabled")
+					} else {
+						m.AddSystemMessage("Verbose mode disabled")
+					}
+				case "cost":
+					m.AddSystemMessage("Token usage: " + formatTokenCount(m.tokens) + " tokens")
+				case "compact":
+					m.AddSystemMessage("Conversation compacting not yet implemented")
+				case "exit":
+					if m.onQuit != nil {
+						m.onQuit()
+					}
+					return m, tea.Quit
+				default:
+					m.AddSystemMessage("Command not yet implemented: " + item.ID)
+				}
+			}
+		}
+		return m, nil
+
+	case "esc", "ctrl+c", "q":
+		m.selection.Hide()
+		return m, nil
+
+	case "backspace":
+		m.selection.RemoveFilterChar()
+		return m, nil
+
+	default:
+		// Type to filter
+		if len(msg.String()) == 1 {
+			r := rune(msg.String()[0])
+			if r >= 32 && r < 127 {
+				m.selection.AddFilterChar(r)
+			}
+		}
+		return m, nil
+	}
 }
 
 func (m Model) handleVimKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

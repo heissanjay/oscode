@@ -329,11 +329,18 @@ func (a *App) runInteractive() error {
 		a.handleQuit,
 	)
 
-	// Create program
+	// Set up model/provider change handlers
+	a.uiModel.SetChangeHandlers(
+		a.handleModelChange,
+		a.handleProviderChange,
+	)
+
+	// Create program with proper options for fluid UI
 	a.program = tea.NewProgram(
 		a.uiModel,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(),
+		tea.WithoutSignalHandler(), // Handle signals ourselves
 	)
 
 	// Handle initial prompt
@@ -375,6 +382,36 @@ func (a *App) handleSubmit(input string) tea.Cmd {
 
 func (a *App) handlePermission(allowed bool) {
 	// This would be connected to the permission callback
+}
+
+func (a *App) handleModelChange(model string) {
+	a.config.DefaultModel = model
+
+	// Re-initialize provider if needed (model might be from different provider)
+	if strings.HasPrefix(model, "claude") || strings.HasPrefix(model, "claude-") {
+		if a.config.DefaultProvider != "anthropic" {
+			a.config.DefaultProvider = "anthropic"
+			a.initProvider()
+		}
+	} else if strings.HasPrefix(model, "gpt") || strings.HasPrefix(model, "o1") {
+		if a.config.DefaultProvider != "openai" {
+			a.config.DefaultProvider = "openai"
+			a.initProvider()
+		}
+	}
+}
+
+func (a *App) handleProviderChange(provider string) {
+	a.config.DefaultProvider = provider
+	a.initProvider()
+
+	// Set default model for the provider
+	switch provider {
+	case "anthropic":
+		a.config.DefaultModel = "claude-sonnet-4-20250514"
+	case "openai":
+		a.config.DefaultModel = "gpt-4o"
+	}
 }
 
 func (a *App) handleQuit() {
