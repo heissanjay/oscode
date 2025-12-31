@@ -13,84 +13,105 @@ func (m Model) View() string {
 		return "\n  Initializing..."
 	}
 
-	var sections []string
-
-	// Header - minimal like Claude Code
-	sections = append(sections, m.renderHeader())
-
-	// Main content area (messages or welcome)
-	sections = append(sections, m.renderContent())
-
-	// Selection menu (if active) - overlays content
-	if m.IsSelectionActive() {
-		sections = append(sections, m.selection.View(m.width))
+	// Calculate heights
+	height := m.height
+	headerHeight := 1 // Minimal header
+	inputHeight := 1  // Single line input
+	statusHeight := 1 // Single line status bar
+	
+	// Adjust input height if rejection with feedback is active
+	if m.state == StatePermissionPrompt && m.rejectingWithInput {
+		inputHeight = 3
 	}
 
-	// Permission prompt (if active)
+	// Calculate viewport height
+	// We reserve space for header, input, status, and potentially permission prompt
+	availableHeight := height - headerHeight - inputHeight - statusHeight
+	
+	// If permission prompt is active, it takes up some space
+	if m.state == StatePermissionPrompt && m.permissionRequest != nil {
+		// Estimate height of permission prompt (border + content)
+		// This is a bit dynamic, but we can set a max height or safe buffer
+		permHeight := 10 // Rough estimate
+		availableHeight -= permHeight
+	}
+
+	// Update viewport height if changed
+	if m.viewport.Height != availableHeight && availableHeight > 0 {
+		m.viewport.Height = availableHeight
+	}
+
+	var sections []string
+
+	// 1. Header (Pinned Top)
+	sections = append(sections, m.renderHeader())
+
+	// 2. Main Content (Viewport)
+	if len(m.messages) == 0 && !m.isStreaming {
+		sections = append(sections, m.renderWelcome())
+	} else {
+		sections = append(sections, m.viewport.View())
+	}
+
+	// 3. Overlays (Permission, Error, Suggestions)
+	// These are rendered "in flow" but functionally act as overlays in the stack
+	
+	// Permission prompt
 	if m.state == StatePermissionPrompt && m.permissionRequest != nil {
 		sections = append(sections, m.renderPermissionPrompt())
 	}
 
-	// Error display (if any)
+	// Error display
 	if m.state == StateError && m.errorMsg != "" {
 		sections = append(sections, m.renderError())
 	}
 
-	// Command suggestions (if typing slash command)
+	// Command suggestions
 	if m.showingSuggestions && len(m.suggestions) > 0 {
 		sections = append(sections, m.renderSuggestions())
 	}
 
-	// Input area - clean single line
+	// Selection menu (if active)
+	if m.IsSelectionActive() {
+		sections = append(sections, m.selection.View(m.width))
+	}
+
+	// 4. Spacer (to push Input/Status to bottom if content is short)
+	// In bubbletea with a viewport, the viewport usually fills the space. 
+	// If we are not using viewport full height, we might need padding.
+	// But sections are joined vertically.
+
+	// 5. Input Area
 	sections = append(sections, m.renderInput())
 
-	// Status bar - minimal
+	// 6. Status Bar (Pinned Bottom)
 	sections = append(sections, m.renderStatusBar())
 
+	// Join all sections
 	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
 func (m Model) renderHeader() string {
-	// Very minimal header - just a thin line with model info
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#4B5563"))
-	accentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706"))
-
-	// Show model name (shortened)
-	modelName := m.model
-	if len(modelName) > 25 {
-		modelName = modelName[:22] + "..."
-	}
-
-	header := accentStyle.Render("oscode") + dimStyle.Render(" · "+modelName)
-
+	// Minimal header - just the logo/name
 	return lipgloss.NewStyle().
 		Width(m.width).
 		Padding(0, 1).
-		Foreground(lipgloss.Color("#4B5563")).
-		Render(header)
-}
-
-func (m Model) renderContent() string {
-	// Show welcome message if no messages yet
-	if len(m.messages) == 0 && !m.isStreaming {
-		return m.renderWelcome()
-	}
-
-	return m.viewport.View()
+		BorderBottom(true).
+		BorderForeground(ColorBorder).
+		Render(ClaudeLabelStyle.Render("Claude Code"))
 }
 
 func (m Model) renderWelcome() string {
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-
-	// Very simple welcome
-	content := dimStyle.Render("What can I help you with?")
+	// Centered welcome message
+	title := ClaudeLabelStyle.Copy().Render("Claude Code")
+	subtitle := TextMutedStyle.Render("What can I help you with?")
 
 	return lipgloss.Place(
-		m.viewport.Width,
+		m.width,
 		m.viewport.Height,
 		lipgloss.Center,
 		lipgloss.Center,
-		content,
+		lipgloss.JoinVertical(lipgloss.Center, title, "", subtitle),
 	)
 }
 
@@ -99,25 +120,20 @@ func (m Model) renderSuggestions() string {
 		return ""
 	}
 
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706"))
-
 	var parts []string
 	for i, s := range m.suggestions {
 		if i >= 5 {
 			break
 		}
-		label := s.Label
 		if i == m.suggestionCursor {
-			parts = append(parts, selectedStyle.Render(label))
+			parts = append(parts, SelectionSelectedStyle.Render(s.Label))
 		} else {
-			parts = append(parts, dimStyle.Render(label))
+			parts = append(parts, TextSecondaryStyle.Render(s.Label))
 		}
 	}
 
 	return lipgloss.NewStyle().
 		Padding(0, 1).
-		Foreground(lipgloss.Color("#6B7280")).
 		Render("  " + strings.Join(parts, "  "))
 }
 
@@ -127,267 +143,136 @@ func (m Model) renderPermissionPrompt() string {
 		return ""
 	}
 
-	// Styles
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-	toolStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706")).Bold(true)
-	pathStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA"))
-	keyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981")).Bold(true)
-	selectedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706")).Bold(true)
-	addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
-	_ = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")) // removeStyle - used in renderDiff
-	borderStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#374151")).
-		Padding(1, 2).
-		Width(m.width - 4)
-
 	var content strings.Builder
 
-	// Header: Tool name and file path
-	content.WriteString(toolStyle.Render(req.Tool))
+	// Title
+	content.WriteString(PermissionTitleStyle.Render("Permission Required"))
+	content.WriteString("\n\n")
+	
+	// Tool & Description
+	content.WriteString(TextPrimaryStyle.Render("Claude wants to run "))
+	content.WriteString(PermissionToolStyle.Render(req.Tool))
+	
 	if req.FilePath != "" {
-		content.WriteString(" ")
-		content.WriteString(pathStyle.Render(req.FilePath))
+		content.WriteString(" on ")
+		content.WriteString(PermissionPathStyle.Render(req.FilePath))
 	} else if req.Command != "" {
-		content.WriteString(dimStyle.Render(": " + truncate(req.Command, 60)))
+		content.WriteString(": ")
+		content.WriteString(TextSecondaryStyle.Render(truncate(req.Command, 60)))
 	}
 	content.WriteString("\n\n")
 
-	// Show diff for file operations
+	// Content Preview (Diff or New Content)
 	if req.IsDiff && (req.OldContent != "" || req.NewContent != "") {
 		content.WriteString(m.renderDiff(req.OldContent, req.NewContent))
 		content.WriteString("\n")
 	} else if req.NewContent != "" {
-		// Show preview for Write operations
+		// Preview for Write
 		lines := strings.Split(req.NewContent, "\n")
-		maxLines := 10
-		if len(lines) > maxLines {
-			for i := 0; i < maxLines; i++ {
-				content.WriteString(addStyle.Render("+ " + lines[i]))
-				content.WriteString("\n")
+		maxLines := 8
+		for i, line := range lines {
+			if i >= maxLines {
+				content.WriteString(TextMutedStyle.Render(fmt.Sprintf("  ... and %d more lines", len(lines)-maxLines)))
+				break
 			}
-			content.WriteString(dimStyle.Render(fmt.Sprintf("  ... and %d more lines", len(lines)-maxLines)))
+			content.WriteString(DiffAddStyle.Render("+ " + line))
 			content.WriteString("\n")
-		} else {
-			for _, line := range lines {
-				content.WriteString(addStyle.Render("+ " + line))
-				content.WriteString("\n")
-			}
 		}
 		content.WriteString("\n")
 	}
 
-	// Action options - Claude Code style
+	// Options
 	options := []struct {
 		key   string
 		label string
 		desc  string
 	}{
-		{"y", "Yes", "Apply this change"},
-		{"a", "Yes, don't ask again", "Allow all " + req.Tool + " operations"},
-		{"n", "No", "Reject and tell Claude what you want instead"},
+		{"y", "Yes", "Allow this operation"},
+		{"a", "Always", "Allow all " + req.Tool + " operations for this session"},
+		{"n", "No", "Reject operation"},
 	}
 
 	for i, opt := range options {
-		prefix := "  "
-		if i == m.permissionChoice {
-			prefix = selectedStyle.Render("▶ ")
-			content.WriteString(prefix)
-			content.WriteString(keyStyle.Render("["+opt.key+"] "))
-			content.WriteString(selectedStyle.Render(opt.label))
-		} else {
-			content.WriteString(prefix)
-			content.WriteString(keyStyle.Render("["+opt.key+"] "))
-			content.WriteString(dimStyle.Render(opt.label))
-		}
-		content.WriteString(dimStyle.Render(" - " + opt.desc))
+		content.WriteString(RenderPermissionOption(opt.key, opt.label, opt.desc, i == m.permissionChoice))
 		content.WriteString("\n")
 	}
 
-	// If in reject mode, show input prompt
+	// Feedback input
 	if m.rejectingWithInput {
 		content.WriteString("\n")
-		content.WriteString(dimStyle.Render("Tell Claude what you want: "))
+		content.WriteString(TextMutedStyle.Render("Reason: "))
 		content.WriteString(m.textarea.View())
 	}
 
-	return borderStyle.Render(content.String())
+	return PermissionBoxStyle.Render(content.String())
 }
 
 func (m Model) renderDiff(oldContent, newContent string) string {
-	addStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
-	removeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-
 	var result strings.Builder
-
+	
+	// Using the helper from styles.go logic but implementing simple diff here
+	// In a real scenario, use a diff library. Here we just show lines.
+	
 	oldLines := strings.Split(oldContent, "\n")
 	newLines := strings.Split(newContent, "\n")
-
-	// Simple diff display
-	maxLines := 15
-	shown := 0
-
-	// Show removed lines
-	for _, line := range oldLines {
-		if shown >= maxLines {
-			result.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more lines removed", len(oldLines)-shown)))
+	
+	// Very basic comparison display
+	maxLines := 10
+	
+	if len(oldLines) > 0 {
+		for i, line := range oldLines {
+			if i >= maxLines { break }
+			result.WriteString(DiffRemoveStyle.Render("- " + line))
 			result.WriteString("\n")
-			break
 		}
-		result.WriteString(removeStyle.Render("- " + line))
-		result.WriteString("\n")
-		shown++
 	}
-
-	// Show added lines
-	shown = 0
-	for _, line := range newLines {
-		if shown >= maxLines {
-			result.WriteString(dimStyle.Render(fmt.Sprintf("  ... %d more lines added", len(newLines)-shown)))
+	
+	if len(newLines) > 0 {
+		for i, line := range newLines {
+			if i >= maxLines { break }
+			result.WriteString(DiffAddStyle.Render("+ " + line))
 			result.WriteString("\n")
-			break
 		}
-		result.WriteString(addStyle.Render("+ " + line))
-		result.WriteString("\n")
-		shown++
 	}
-
+	
 	return result.String()
 }
 
 func (m Model) renderError() string {
 	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#EF4444")).
 		Padding(0, 1).
-		Render("Error: " + m.errorMsg)
+		Render(RenderError(m.errorMsg))
 }
 
 func (m Model) renderInput() string {
-	promptStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#D97706"))
-
 	var prompt string
+	
 	if m.state == StateProcessing {
-		prompt = promptStyle.Render(m.spinner.View() + " ")
+		// Show spinner with dynamic verb
+		verb := m.GetCurrentVerb()
+		prompt = RenderSpinnerWithVerb(m.spinner.View(), verb)
 	} else {
-		prompt = promptStyle.Render("> ")
+		// Standard prompt
+		prompt = InputPromptStyle.Render("> ")
 	}
 
 	return lipgloss.NewStyle().
 		Width(m.width).
 		Padding(0, 1).
-		Render(prompt + m.textarea.View())
+		Render(prompt + InputTextStyle.Render(m.textarea.Value()))
 }
 
 func (m Model) renderStatusBar() string {
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#4B5563"))
-
-	var parts []string
-
-	// Status during processing
-	switch m.state {
-	case StateProcessing:
-		if m.isStreaming && m.streamingContent != "" {
-			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981")).Render("●"))
-		} else {
-			parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706")).Render("○"))
-		}
-	case StatePermissionPrompt:
-		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render("?"))
-	}
-
-	// Scroll indicator if not at bottom
-	if m.viewport.YOffset > 0 {
-		total := m.viewport.TotalLineCount() - m.viewport.Height
-		if total > 0 {
-			pct := int(float64(m.viewport.YOffset) / float64(total) * 100)
-			parts = append(parts, dimStyle.Render(fmt.Sprintf("↑%d%%", pct)))
+	// Status Line: Model | Tokens | Cost
+	
+	// Left: Model
+	modelDisplay := m.model
+	if strings.HasPrefix(modelDisplay, "claude-") {
+		parts := strings.Split(modelDisplay, "-")
+		if len(parts) >= 2 {
+			modelDisplay = "Claude " + strings.Title(parts[1])
 		}
 	}
-
-	// Token count
-	if m.tokens > 0 {
-		parts = append(parts, dimStyle.Render(formatTokenCount(m.tokens)))
-	}
-
-	statusLine := strings.Join(parts, dimStyle.Render(" · "))
-
-	return lipgloss.NewStyle().
-		Width(m.width).
-		Padding(0, 1).
-		Render(statusLine)
-}
-
-func formatTokenCount(tokens int) string {
-	if tokens < 1000 {
-		return fmt.Sprintf("%d tok", tokens)
-	}
-	if tokens < 1000000 {
-		return fmt.Sprintf("%.1fk tok", float64(tokens)/1000)
-	}
-	return fmt.Sprintf("%.1fM tok", float64(tokens)/1000000)
-}
-
-// RenderHelp renders the help screen
-func RenderHelp() string {
-	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#E5E7EB")).
-		Bold(true)
-
-	keyStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#D97706")).
-		Bold(true)
-
-	descStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#9CA3AF"))
-
-	var content strings.Builder
-
-	content.WriteString(titleStyle.Render("Keyboard Shortcuts"))
-	content.WriteString("\n\n")
-
-	shortcuts := []struct {
-		key  string
-		desc string
-	}{
-		{"Enter", "Submit message"},
-		{"Ctrl+J", "Insert newline"},
-		{"Ctrl+C", "Cancel/Quit"},
-		{"Ctrl+L", "Clear screen"},
-		{"Up/Down", "History / Scroll"},
-		{"PgUp/PgDn", "Scroll page"},
-	}
-
-	for _, s := range shortcuts {
-		content.WriteString(keyStyle.Render(fmt.Sprintf("%-12s", s.key)))
-		content.WriteString(descStyle.Render(s.desc))
-		content.WriteString("\n")
-	}
-
-	content.WriteString("\n")
-	content.WriteString(titleStyle.Render("Commands"))
-	content.WriteString("\n\n")
-
-	commands := []struct {
-		cmd  string
-		desc string
-	}{
-		{"/help", "Show help"},
-		{"/clear", "Clear conversation"},
-		{"/model", "Switch model"},
-		{"/exit", "Exit"},
-	}
-
-	for _, c := range commands {
-		content.WriteString(keyStyle.Render(fmt.Sprintf("%-12s", c.cmd)))
-		content.WriteString(descStyle.Render(c.desc))
-		content.WriteString("\n")
-	}
-
-	return lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#374151")).
-		Padding(1, 2).
-		Render(content.String())
+	
+	return RenderStatusLine(modelDisplay, m.tokens, m.width)
 }

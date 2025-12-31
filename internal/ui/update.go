@@ -346,7 +346,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "cost":
-				m.AddSystemMessage("Token usage: " + formatTokenCount(m.tokens) + " tokens")
+				m.AddSystemMessage("Token usage: " + FormatTokenCount(m.tokens) + " tokens")
 				return m, nil
 
 			case "compact":
@@ -682,7 +682,7 @@ func (m Model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 						m.AddSystemMessage("Verbose mode disabled")
 					}
 				case "cost":
-					m.AddSystemMessage("Token usage: " + formatTokenCount(m.tokens) + " tokens")
+					m.AddSystemMessage("Token usage: " + FormatTokenCount(m.tokens) + " tokens")
 				case "compact":
 					m.AddSystemMessage("Conversation compacting not yet implemented")
 				case "exit":
