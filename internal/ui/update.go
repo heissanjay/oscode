@@ -38,13 +38,6 @@ type (
 		IsError  bool
 	}
 
-	// PermissionRequestMsg requests permission from user
-	PermissionRequestMsg struct {
-		Tool        string
-		Description string
-		Command     string
-	}
-
 	// ErrorMsg contains an error to display
 	ErrorMsg struct {
 		Error error
@@ -65,15 +58,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.handleKeyMsg(msg)
 
+	case tea.MouseMsg:
+		// Handle mouse scrolling
+		if msg.Action == tea.MouseActionPress {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.viewport.LineUp(3)
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				m.viewport.LineDown(3)
+				return m, nil
+			}
+		}
+		// Pass mouse events to viewport
+		var cmd tea.Cmd
+		m.viewport, cmd = m.viewport.Update(msg)
+		if cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		return m, tea.Batch(cmds...)
+
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Update component sizes
-		headerHeight := 3
-		statusHeight := 1
-		inputHeight := 4
-		padding := 2
+		// Update component sizes - Claude Code style compact layout
+		headerHeight := 1  // Single line header
+		statusHeight := 1  // Single line status
+		inputHeight := 1   // Single line input
+		padding := 2       // Top/bottom padding
 		viewportHeight := m.height - headerHeight - statusHeight - inputHeight - padding
 
 		if viewportHeight < 5 {
@@ -82,7 +95,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.viewport.Width = m.width - 2
 		m.viewport.Height = viewportHeight
-		m.textarea.SetWidth(m.width - 4)
+		m.textarea.SetWidth(m.width - 6) // Account for prompt indicator
 
 		if !m.ready {
 			m.ready = true
@@ -93,7 +106,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case TickMsg:
 		// Continuous tick for smooth UI updates during streaming
-		if m.isStreaming {
+		if m.isStreaming || m.state == StateProcessing {
 			cmds = append(cmds, Tick())
 		}
 		return m, tea.Batch(cmds...)
@@ -107,25 +120,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case PermissionRequestMsg:
+		// Show permission prompt
+		m.permissionRequest = msg.Request
+		m.permissionChoice = 0
+		m.rejectingWithInput = false
+		m.state = StatePermissionPrompt
+		return m, nil
+
 	case StreamDoneMsg:
-		// Finalize streaming
-		if m.streamingContent != "" {
-			m.AddAssistantMessage(m.streamingContent)
-			m.streamingContent = ""
-		}
+		// IMPORTANT: First stop streaming, THEN add message to avoid double rendering
+		content := m.streamingContent
+		m.streamingContent = ""
 		m.SetStreaming(false)
+
+		// Now add the message (viewport will render without streaming content)
+		if content != "" {
+			m.AddAssistantMessage(content)
+		}
 		m.UpdateTokens(msg.InputTokens, msg.OutputTokens)
 		return m, nil
 
 	case StreamErrorMsg:
+		m.streamingContent = ""
 		m.SetStreaming(false)
 		m.AddErrorMessage(msg.Error.Error())
 		return m, nil
 
 	case ToolStartMsg:
-		// Always show tool start with spinner effect
+		// Show tool start with spinner effect
 		m.AddToolMessage(msg.ToolName, "Running...", false)
-		return m, nil
+		return m, m.spinner.Tick
 
 	case ToolDoneMsg:
 		// Update the last tool message with result
@@ -143,14 +168,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case PermissionRequestMsg:
-		m.ShowPermissionPrompt(&PermissionRequest{
-			Tool:        msg.Tool,
-			Description: msg.Description,
-			Command:     msg.Command,
-		})
-		return m, nil
-
 	case ErrorMsg:
 		m.AddErrorMessage(msg.Error.Error())
 		return m, nil
@@ -163,12 +180,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case spinner.TickMsg:
-		// Always update spinner and keep it ticking during processing/streaming
+		// Update spinner and keep it ticking during processing/streaming
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		if m.state == StateProcessing || m.isStreaming {
 			cmds = append(cmds, cmd)
-			// Force viewport update to show spinner animation in tool messages
+			// Force viewport update to show spinner animation
 			m.updateViewport()
 		}
 		return m, tea.Batch(cmds...)
@@ -204,16 +221,25 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Handle processing state (allow cancel)
-	if m.state == StateProcessing {
+	// Handle processing state (allow cancel and scrolling)
+	if m.state == StateProcessing || m.isStreaming {
 		switch msg.String() {
-		case "ctrl+c":
+		case "ctrl+c", "esc":
+			m.streamingContent = ""
 			m.SetStreaming(false)
 			m.AddSystemMessage("Cancelled")
 			return m, nil
-		case "esc":
-			m.SetStreaming(false)
-			m.AddSystemMessage("Cancelled")
+		case "up", "k":
+			m.viewport.LineUp(1)
+			return m, nil
+		case "down", "j":
+			m.viewport.LineDown(1)
+			return m, nil
+		case "pgup":
+			m.viewport.ViewUp()
+			return m, nil
+		case "pgdown":
+			m.viewport.ViewDown()
 			return m, nil
 		}
 		return m, nil
@@ -229,6 +255,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		if m.textarea.Value() != "" {
 			m.textarea.Reset()
+			m.showingSuggestions = false
 			return m, nil
 		}
 		if m.onQuit != nil {
@@ -262,6 +289,9 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if input == "" {
 			return m, nil
 		}
+
+		// Hide suggestions if showing
+		m.showingSuggestions = false
 
 		// Handle slash commands interactively
 		if strings.HasPrefix(input, "/") {
@@ -343,7 +373,7 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.SetStreaming(true)
 
 		// Start spinner ticking
-		cmds = append(cmds, m.spinner.Tick)
+		cmds = append(cmds, m.spinner.Tick, Tick())
 
 		// Call submit handler
 		if m.onSubmit != nil {
@@ -358,6 +388,14 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "tab":
+		// If showing inline suggestions, select the current one
+		if m.showingSuggestions && len(m.suggestions) > 0 {
+			selected := m.suggestions[m.suggestionCursor]
+			m.textarea.SetValue(selected.Label)
+			m.textarea.CursorEnd()
+			m.showingSuggestions = false
+			return m, nil
+		}
 		// Show command palette if input starts with /
 		input := m.textarea.Value()
 		if strings.HasPrefix(input, "/") {
@@ -365,11 +403,19 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.ShowCommandPalette(filter)
 			return m, nil
 		}
-		// Otherwise, just pass through
 		return m, nil
 
 	case "up":
-		// History navigation
+		// Navigate suggestions if showing
+		if m.showingSuggestions && len(m.suggestions) > 0 {
+			if m.suggestionCursor > 0 {
+				m.suggestionCursor--
+			} else {
+				m.suggestionCursor = len(m.suggestions) - 1
+			}
+			return m, nil
+		}
+		// History navigation when not showing suggestions
 		if m.historyIndex > 0 {
 			m.historyIndex--
 			m.textarea.SetValue(m.history[m.historyIndex])
@@ -378,6 +424,15 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "down":
+		// Navigate suggestions if showing
+		if m.showingSuggestions && len(m.suggestions) > 0 {
+			if m.suggestionCursor < len(m.suggestions)-1 {
+				m.suggestionCursor++
+			} else {
+				m.suggestionCursor = 0
+			}
+			return m, nil
+		}
 		// History navigation
 		if m.historyIndex < len(m.history)-1 {
 			m.historyIndex++
@@ -390,6 +445,10 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "esc":
+		if m.showingSuggestions {
+			m.showingSuggestions = false
+			return m, nil
+		}
 		if m.vimMode {
 			m.vimNormal = true
 			return m, nil
@@ -409,42 +468,152 @@ func (m Model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.textarea, cmd = m.textarea.Update(msg)
 	cmds = append(cmds, cmd)
 
+	// Check if we should show suggestions (when typing slash commands)
+	input := m.textarea.Value()
+	if strings.HasPrefix(input, "/") && len(input) > 1 {
+		m.showingSuggestions = true
+		m.updateSuggestions(strings.TrimPrefix(input, "/"))
+	} else {
+		m.showingSuggestions = false
+	}
+
 	return m, tea.Batch(cmds...)
 }
 
 func (m Model) handlePermissionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Guard against nil permission request
+	if m.permissionRequest == nil {
+		m.state = StateInput
+		return m, nil
+	}
+
+	// If typing feedback for rejection
+	if m.rejectingWithInput {
+		switch msg.String() {
+		case "enter":
+			// Submit the feedback
+			feedback := m.textarea.Value()
+			resp := PermissionResponse{Allowed: false, Feedback: feedback}
+			if m.permissionRequest != nil && m.permissionRequest.Callback != nil {
+				m.permissionRequest.Callback(resp)
+			}
+			if m.onPermission != nil {
+				m.onPermission(resp)
+			}
+			m.permissionRequest = nil
+			m.rejectingWithInput = false
+			m.state = StateInput
+			m.textarea.Reset()
+			if feedback != "" {
+				m.AddSystemMessage("Permission denied: " + feedback)
+			} else {
+				m.AddSystemMessage("Permission denied")
+			}
+			return m, nil
+		case "esc":
+			// Cancel feedback, go back to selection
+			m.rejectingWithInput = false
+			m.textarea.Reset()
+			return m, nil
+		default:
+			// Pass to textarea
+			var cmd tea.Cmd
+			m.textarea, cmd = m.textarea.Update(msg)
+			return m, cmd
+		}
+	}
+
 	switch strings.ToLower(msg.String()) {
 	case "y":
+		// Quick shortcut for yes
+		resp := PermissionResponse{Allowed: true}
+		if m.permissionRequest != nil && m.permissionRequest.Callback != nil {
+			m.permissionRequest.Callback(resp)
+		}
 		if m.onPermission != nil {
-			m.onPermission(true)
+			m.onPermission(resp)
 		}
 		m.permissionRequest = nil
+		m.permissionChoice = 0
+		m.state = StateProcessing
+		return m, nil
+
+	case "a":
+		// Quick shortcut for yes, don't ask again
+		resp := PermissionResponse{Allowed: true, DontAskAgain: true}
+		if m.permissionRequest != nil && m.permissionRequest.Callback != nil {
+			m.permissionRequest.Callback(resp)
+		}
+		if m.onPermission != nil {
+			m.onPermission(resp)
+		}
+		m.permissionRequest = nil
+		m.permissionChoice = 0
 		m.state = StateProcessing
 		return m, nil
 
 	case "n":
-		if m.onPermission != nil {
-			m.onPermission(false)
-		}
-		m.permissionRequest = nil
-		m.state = StateInput
-		m.AddSystemMessage("Permission denied")
+		// Quick shortcut for no - go to feedback mode
+		m.permissionChoice = 2
+		m.rejectingWithInput = true
+		m.textarea.Focus()
+		m.textarea.SetValue("")
 		return m, nil
 
-	case "a": // Allow all for session
-		if m.onPermission != nil {
-			m.onPermission(true)
+	case "up", "k":
+		if m.permissionChoice > 0 {
+			m.permissionChoice--
 		}
-		// TODO: Add to session allow list
-		m.permissionRequest = nil
-		m.state = StateProcessing
 		return m, nil
+
+	case "down", "j":
+		if m.permissionChoice < 2 {
+			m.permissionChoice++
+		}
+		return m, nil
+
+	case "enter":
+		// Execute selected option
+		switch m.permissionChoice {
+		case 0: // Yes
+			resp := PermissionResponse{Allowed: true}
+			if m.permissionRequest != nil && m.permissionRequest.Callback != nil {
+				m.permissionRequest.Callback(resp)
+			}
+			if m.onPermission != nil {
+				m.onPermission(resp)
+			}
+			m.permissionRequest = nil
+			m.state = StateProcessing
+			return m, nil
+		case 1: // Yes, don't ask again
+			resp := PermissionResponse{Allowed: true, DontAskAgain: true}
+			if m.permissionRequest != nil && m.permissionRequest.Callback != nil {
+				m.permissionRequest.Callback(resp)
+			}
+			if m.onPermission != nil {
+				m.onPermission(resp)
+			}
+			m.permissionRequest = nil
+			m.state = StateProcessing
+			return m, nil
+		case 2: // No with feedback
+			m.rejectingWithInput = true
+			m.textarea.Focus()
+			m.textarea.SetValue("")
+			return m, nil
+		}
 
 	case "ctrl+c", "esc":
+		resp := PermissionResponse{Allowed: false}
+		if m.permissionRequest != nil && m.permissionRequest.Callback != nil {
+			m.permissionRequest.Callback(resp)
+		}
 		if m.onPermission != nil {
-			m.onPermission(false)
+			m.onPermission(resp)
 		}
 		m.permissionRequest = nil
+		m.permissionChoice = 0
 		m.state = StateInput
 		return m, nil
 	}
@@ -555,7 +724,6 @@ func (m Model) handleVimKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "a":
 		m.vimNormal = false
-		// Move cursor right
 		return m, nil
 	case "I":
 		m.vimNormal = false
@@ -566,16 +734,14 @@ func (m Model) handleVimKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.textarea.CursorEnd()
 		return m, nil
 	case "h":
-		// Move left
 		return m, nil
 	case "l":
-		// Move right
 		return m, nil
 	case "j":
-		m.viewport.ViewDown()
+		m.viewport.LineDown(1)
 		return m, nil
 	case "k":
-		m.viewport.ViewUp()
+		m.viewport.LineUp(1)
 		return m, nil
 	case "g":
 		m.viewport.GotoTop()
@@ -584,11 +750,15 @@ func (m Model) handleVimKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 		return m, nil
 	case "d":
-		// Delete line
 		m.textarea.Reset()
 		return m, nil
+	case "ctrl+d":
+		m.viewport.HalfViewDown()
+		return m, nil
+	case "ctrl+u":
+		m.viewport.HalfViewUp()
+		return m, nil
 	case ":":
-		// Command mode (future enhancement)
 		return m, nil
 	}
 
@@ -656,9 +826,9 @@ func SendToolDone(name, result string, isError bool) tea.Cmd {
 }
 
 // SendPermissionRequest sends a permission request
-func SendPermissionRequest(tool, desc, cmd string) tea.Cmd {
+func SendPermissionRequest(req *PermissionRequest) tea.Cmd {
 	return func() tea.Msg {
-		return PermissionRequestMsg{Tool: tool, Description: desc, Command: cmd}
+		return PermissionRequestMsg{Request: req}
 	}
 }
 

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -47,7 +48,18 @@ type PermissionRequest struct {
 	Tool        string
 	Description string
 	Command     string
-	Callback    func(bool)
+	FilePath    string          // For file operations
+	OldContent  string          // For Edit: content being replaced
+	NewContent  string          // For Edit/Write: new content
+	IsDiff      bool            // Whether this is a diff view
+	Callback    func(response PermissionResponse)
+}
+
+// PermissionResponse represents the user's response to a permission request
+type PermissionResponse struct {
+	Allowed      bool
+	DontAskAgain bool   // "a" - allow all for this tool
+	Feedback     string // If rejected, user can explain why
 }
 
 // Model represents the main UI model
@@ -81,11 +93,14 @@ type Model struct {
 	availableProviders []SelectionItem
 
 	// Permission handling
-	permissionRequest *PermissionRequest
+	permissionRequest  *PermissionRequest
+	permissionChoice   int  // 0=yes, 1=yes always, 2=no with feedback
+	rejectingWithInput bool // User is typing rejection feedback
 
 	// Streaming state
 	streamingContent string
 	isStreaming      bool
+	currentVerb      string // Dynamic verb for spinner (Thinking, Reading, etc.)
 
 	// Verbose mode
 	verbose bool
@@ -97,45 +112,77 @@ type Model struct {
 	// Error message
 	errorMsg string
 
+	// Command suggestions
+	showingSuggestions bool
+	suggestions        []SelectionItem
+	suggestionCursor   int
+
 	// Event handlers (set by app)
 	onSubmit         func(string) tea.Cmd
-	onPermission     func(bool)
+	onPermission     func(PermissionResponse)
 	onQuit           func()
 	onModelChange    func(string)
 	onProviderChange func(string)
 }
 
+// allCommands is the list of all available commands for suggestions
+var allCommands = []SelectionItem{
+	{ID: "help", Label: "/help", Description: "Show commands"},
+	{ID: "model", Label: "/model", Description: "Switch model"},
+	{ID: "provider", Label: "/provider", Description: "Switch provider"},
+	{ID: "clear", Label: "/clear", Description: "Clear conversation"},
+	{ID: "compact", Label: "/compact", Description: "Compact conversation"},
+	{ID: "cost", Label: "/cost", Description: "Show token usage"},
+	{ID: "vim", Label: "/vim", Description: "Toggle vim mode"},
+	{ID: "verbose", Label: "/verbose", Description: "Toggle verbose"},
+	{ID: "exit", Label: "/exit", Description: "Exit application"},
+}
+
+// updateSuggestions updates the command suggestions based on filter
+func (m *Model) updateSuggestions(filter string) {
+	filter = strings.ToLower(filter)
+	m.suggestions = nil
+	m.suggestionCursor = 0
+
+	for _, cmd := range allCommands {
+		if strings.HasPrefix(strings.ToLower(cmd.ID), filter) ||
+			strings.Contains(strings.ToLower(cmd.Label), filter) {
+			m.suggestions = append(m.suggestions, cmd)
+		}
+	}
+}
+
 // NewModel creates a new UI model
 func NewModel() Model {
-	// Create textarea for input - single line, clean look
+	// Create textarea for input - single line, minimal like Claude Code
 	ta := textarea.New()
-	ta.Placeholder = "Message oscode..."
+	ta.Placeholder = "Type a message..."
 	ta.Prompt = ""
 	ta.CharLimit = 0
 	ta.SetWidth(80)
-	ta.SetHeight(1) // Single line by default
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#4B5563"))
-	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB"))
-	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.SetHeight(1) // Always single line
 	ta.ShowLineNumbers = false
 	ta.KeyMap.InsertNewline.SetEnabled(false)
+
+	// Minimal styling - no background, just text
+	ta.FocusedStyle.Base = lipgloss.NewStyle()
+	ta.BlurredStyle.Base = lipgloss.NewStyle()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.BlurredStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#4B5563"))
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Foreground(lipgloss.Color("#374151"))
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#E5E7EB"))
+	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
 	ta.Focus()
 
-	// Create smooth spinner
+	// Create Claude sparkle spinner - the magical thinking animation
 	s := spinner.New()
-	s.Spinner = spinner.Spinner{
-		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
-		FPS:    time.Millisecond * 80,
-	}
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706"))
+	s.Spinner = ClaudeSpinner()
+	s.Style = ToolSpinnerStyle
 
 	// Create viewport for messages
 	vp := viewport.New(80, 20)
-	vp.Style = lipgloss.NewStyle().Padding(0, 1)
+	vp.Style = lipgloss.NewStyle()
 
 	return Model{
 		state:        StateInput,
@@ -150,22 +197,23 @@ func NewModel() Model {
 		height:       24,
 		ready:        true, // Start ready immediately
 		availableModels: []SelectionItem{
-			{ID: "claude-sonnet-4-20250514", Label: "claude-sonnet-4", Description: "Best for coding tasks", Selected: true},
-			{ID: "claude-opus-4-20250514", Label: "claude-opus-4", Description: "Most capable"},
-			{ID: "claude-haiku-3-5-20241022", Label: "claude-haiku-3.5", Description: "Fast and efficient"},
-			{ID: "gpt-4o", Label: "gpt-4o", Description: "OpenAI flagship"},
-			{ID: "gpt-4o-mini", Label: "gpt-4o-mini", Description: "Fast OpenAI model"},
+			{ID: "gpt-4o", Label: "gpt-4o", Description: "OpenAI flagship", Selected: true},
+			{ID: "gpt-4o-mini", Label: "gpt-4o-mini", Description: "Fast and affordable"},
 			{ID: "o1-preview", Label: "o1-preview", Description: "Reasoning model"},
+			{ID: "o1-mini", Label: "o1-mini", Description: "Fast reasoning"},
+			{ID: "claude-sonnet-4-20250514", Label: "claude-sonnet-4", Description: "Best for coding"},
+			{ID: "claude-opus-4-20250514", Label: "claude-opus-4", Description: "Most capable"},
+			{ID: "claude-haiku-3-5-20241022", Label: "claude-haiku-3.5", Description: "Fast Claude"},
 		},
 		availableProviders: []SelectionItem{
-			{ID: "anthropic", Label: "Anthropic", Description: "Claude models", Selected: true},
-			{ID: "openai", Label: "OpenAI", Description: "GPT models"},
+			{ID: "openai", Label: "OpenAI", Description: "GPT models", Selected: true},
+			{ID: "anthropic", Label: "Anthropic", Description: "Claude models"},
 		},
 	}
 }
 
 // SetHandlers sets the event handlers
-func (m *Model) SetHandlers(onSubmit func(string) tea.Cmd, onPermission func(bool), onQuit func()) {
+func (m *Model) SetHandlers(onSubmit func(string) tea.Cmd, onPermission func(PermissionResponse), onQuit func()) {
 	m.onSubmit = onSubmit
 	m.onPermission = onPermission
 	m.onQuit = onQuit
@@ -315,9 +363,24 @@ func (m *Model) SetStreaming(streaming bool) {
 	if streaming {
 		m.state = StateProcessing
 		m.streamingContent = ""
+		m.currentVerb = GetSpinnerVerb("default") // Reset to "Thinking"
 	} else {
 		m.state = StateInput
+		m.currentVerb = ""
 	}
+}
+
+// SetCurrentVerb sets the dynamic verb for the spinner
+func (m *Model) SetCurrentVerb(action string) {
+	m.currentVerb = GetSpinnerVerb(action)
+}
+
+// GetCurrentVerb returns the current spinner verb
+func (m *Model) GetCurrentVerb() string {
+	if m.currentVerb == "" {
+		return GetSpinnerVerb("default")
+	}
+	return m.currentVerb
 }
 
 // AppendStreamContent appends content to the current stream
@@ -377,99 +440,97 @@ func (m *Model) updateViewport() {
 func (m *Model) renderMessages() string {
 	var sb strings.Builder
 
-	// Styles for Claude Code-like appearance
-	userPromptStyle := lipgloss.NewStyle().
+	// Clean, minimal styles inspired by Claude Code
+	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
+
+	// User: bold orange prompt, white text
+	userLabelStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#D97706")).
 		Bold(true)
-
 	userTextStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#E5E7EB"))
+		Foreground(lipgloss.Color("#F9FAFB"))
 
+	// Assistant: clean white text, no label
 	assistantStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#E5E7EB"))
 
-	toolNameStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#6366F1")).
-		Bold(true)
-
-	toolRunningStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#9CA3AF")).
-		Italic(true)
-
-	toolResultStyle := lipgloss.NewStyle().
+	// Tools: very compact, single line, dim
+	toolStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#6B7280"))
+	toolIconSuccess := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981")).Render("●")
+	toolIconError := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render("●")
+	toolIconRunning := lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706")).Render("○")
 
-	successIcon := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#10B981")).
-		Render("✓")
-
-	errorIcon := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#EF4444")).
-		Render("✗")
-
+	// System: italic, dim
 	systemStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#9CA3AF")).
 		Italic(true)
 
+	// Error: red
 	errorStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#EF4444"))
+
+	// Group consecutive tool messages
+	var pendingTools []DisplayMessage
+	flushTools := func() {
+		if len(pendingTools) == 0 {
+			return
+		}
+		// Render tools as a compact block
+		for _, tool := range pendingTools {
+			var icon string
+			if tool.Content == "Running..." {
+				icon = toolIconRunning
+			} else if tool.IsError {
+				icon = toolIconError
+			} else {
+				icon = toolIconSuccess
+			}
+			sb.WriteString(toolStyle.Render(fmt.Sprintf("  %s %s", icon, tool.ToolName)))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+		pendingTools = nil
+	}
 
 	for _, msg := range m.messages {
 		switch msg.Type {
 		case MessageTypeUser:
-			sb.WriteString(userPromptStyle.Render("> "))
+			flushTools()
+			sb.WriteString(userLabelStyle.Render("You"))
+			sb.WriteString(dimStyle.Render(": "))
 			sb.WriteString(userTextStyle.Render(msg.Content))
 			sb.WriteString("\n\n")
 
 		case MessageTypeAssistant:
-			sb.WriteString(assistantStyle.Render(msg.Content))
+			flushTools()
+			// Render markdown for assistant messages
+			rendered := RenderMarkdown(msg.Content, m.viewport.Width)
+			sb.WriteString(assistantStyle.Render(rendered))
 			sb.WriteString("\n\n")
 
 		case MessageTypeTool:
-			if msg.Content == "Running..." {
-				// Tool in progress
-				sb.WriteString("  ")
-				sb.WriteString(m.spinner.View())
-				sb.WriteString(" ")
-				sb.WriteString(toolNameStyle.Render(msg.ToolName))
-				sb.WriteString(" ")
-				sb.WriteString(toolRunningStyle.Render("running..."))
-				sb.WriteString("\n")
-			} else {
-				// Tool completed
-				if msg.IsError {
-					sb.WriteString("  ")
-					sb.WriteString(errorIcon)
-				} else {
-					sb.WriteString("  ")
-					sb.WriteString(successIcon)
-				}
-				sb.WriteString(" ")
-				sb.WriteString(toolNameStyle.Render(msg.ToolName))
-				if msg.Content != "" && msg.Content != "Running..." {
-					// Show truncated result
-					result := truncate(msg.Content, 200)
-					if result != "" {
-						sb.WriteString("\n    ")
-						sb.WriteString(toolResultStyle.Render(result))
-					}
-				}
-				sb.WriteString("\n")
-			}
+			pendingTools = append(pendingTools, msg)
 
 		case MessageTypeSystem:
-			sb.WriteString(systemStyle.Render("  " + msg.Content))
+			flushTools()
+			sb.WriteString(systemStyle.Render(msg.Content))
 			sb.WriteString("\n\n")
 
 		case MessageTypeError:
-			sb.WriteString(errorStyle.Render("  Error: " + msg.Content))
+			flushTools()
+			sb.WriteString(errorStyle.Render("Error: " + msg.Content))
 			sb.WriteString("\n\n")
 		}
 	}
 
+	// Flush any remaining tools
+	flushTools()
+
 	// Add streaming content with cursor
 	if m.isStreaming && m.streamingContent != "" {
-		sb.WriteString(assistantStyle.Render(m.streamingContent))
+		rendered := RenderMarkdown(m.streamingContent, m.viewport.Width)
+		sb.WriteString(assistantStyle.Render(rendered))
 		sb.WriteString(lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#D97706")).
 			Render("▌"))
@@ -496,6 +557,11 @@ func (m Model) Init() tea.Cmd {
 
 // TickMsg is sent to keep the UI updating
 type TickMsg struct{}
+
+// PermissionRequestMsg is sent to request permission from the user
+type PermissionRequestMsg struct {
+	Request *PermissionRequest
+}
 
 // Tick returns a command that ticks continuously for smooth updates
 func Tick() tea.Cmd {

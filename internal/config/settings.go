@@ -110,8 +110,8 @@ type UIConfig struct {
 // DefaultConfig returns the default configuration
 func DefaultConfig() *Config {
 	return &Config{
-		DefaultProvider: "anthropic",
-		DefaultModel:    "claude-sonnet-4-20250514",
+		DefaultProvider: "openai",
+		DefaultModel:    "gpt-4o",
 		Providers: map[string]ProviderConfig{
 			"anthropic": {
 				APIKey:  "${ANTHROPIC_API_KEY}",

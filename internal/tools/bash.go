@@ -381,3 +381,45 @@ func (t *BashOutputTool) Execute(ctx context.Context, input json.RawMessage) (*R
 
 	return t.bashTool.GetTaskOutput(params.TaskID, wait)
 }
+
+// KillShellTool kills a running background shell
+type KillShellTool struct {
+	BaseTool
+	bashTool *BashTool
+}
+
+// NewKillShellTool creates a new KillShell tool
+func NewKillShellTool(bashTool *BashTool) *KillShellTool {
+	return &KillShellTool{
+		BaseTool: NewBaseTool(
+			"KillShell",
+			"Kills a running background shell by its ID. Use this to terminate long-running tasks.",
+			BuildSchema(map[string]interface{}{
+				"shell_id": StringProperty("The ID of the background shell to kill", true),
+			}, []string{"shell_id"}),
+			true, // Requires permission
+			CategoryExecution,
+		),
+		bashTool: bashTool,
+	}
+}
+
+func (t *KillShellTool) Execute(ctx context.Context, input json.RawMessage) (*Result, error) {
+	var params struct {
+		ShellID string `json:"shell_id"`
+	}
+	if err := json.Unmarshal(input, &params); err != nil {
+		return NewErrorResult(fmt.Errorf("invalid input: %w", err)), nil
+	}
+
+	if params.ShellID == "" {
+		return NewErrorResultString("shell_id is required"), nil
+	}
+
+	err := t.bashTool.KillTask(params.ShellID)
+	if err != nil {
+		return NewErrorResult(err), nil
+	}
+
+	return NewResult(fmt.Sprintf("Successfully killed shell: %s", params.ShellID)), nil
+}

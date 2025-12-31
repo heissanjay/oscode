@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/oscode-cli/oscode/internal/app"
-	"github.com/oscode-cli/oscode/internal/config"
+	"github.com/heissanjay/oscode/internal/app"
+	"github.com/heissanjay/oscode/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -175,7 +175,7 @@ func updateCmd() *cobra.Command {
 		Short: "Update OSCode to the latest version",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println("Update functionality not yet implemented")
-			fmt.Println("Please update via: go install github.com/oscode-cli/oscode/cmd/oscode@latest")
+			fmt.Println("Please update via: go install github.com/heissanjay/oscode/cmd/oscode@latest")
 		},
 	}
 }

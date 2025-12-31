@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/oscode-cli/oscode/internal/llm"
+	"github.com/heissanjay/oscode/internal/llm"
 )
 
 // Tool defines the interface for all tools

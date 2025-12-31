@@ -9,32 +9,32 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/oscode-cli/oscode/internal/config"
-	"github.com/oscode-cli/oscode/internal/llm"
+	"github.com/heissanjay/oscode/internal/config"
+	"github.com/heissanjay/oscode/internal/llm"
 )
 
 // Session represents an active or saved session
 type Session struct {
-	ID              string         `json:"id"`
-	Name            string         `json:"name,omitempty"`
-	WorkingDir      string         `json:"working_dir"`
-	Provider        string         `json:"provider"`
-	Model           string         `json:"model"`
-	Messages        []llm.Message  `json:"messages"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	TotalInputTokens  int          `json:"total_input_tokens"`
-	TotalOutputTokens int          `json:"total_output_tokens"`
-	Checkpoints     []Checkpoint   `json:"checkpoints,omitempty"`
+	ID                string        `json:"id"`
+	Name              string        `json:"name,omitempty"`
+	WorkingDir        string        `json:"working_dir"`
+	Provider          string        `json:"provider"`
+	Model             string        `json:"model"`
+	Messages          []llm.Message `json:"messages"`
+	CreatedAt         time.Time     `json:"created_at"`
+	UpdatedAt         time.Time     `json:"updated_at"`
+	TotalInputTokens  int           `json:"total_input_tokens"`
+	TotalOutputTokens int           `json:"total_output_tokens"`
+	Checkpoints       []Checkpoint  `json:"checkpoints,omitempty"`
 }
 
 // Checkpoint represents a point in the session that can be restored
 type Checkpoint struct {
-	ID          string        `json:"id"`
-	MessageIdx  int           `json:"message_idx"`
-	Description string        `json:"description"`
-	CreatedAt   time.Time     `json:"created_at"`
-	FileState   []FileState   `json:"file_state,omitempty"`
+	ID          string      `json:"id"`
+	MessageIdx  int         `json:"message_idx"`
+	Description string      `json:"description"`
+	CreatedAt   time.Time   `json:"created_at"`
+	FileState   []FileState `json:"file_state,omitempty"`
 }
 
 // FileState captures the state of a file at a checkpoint

@@ -146,32 +146,27 @@ func (s *SelectionModel) View(width int) string {
 		return ""
 	}
 
-	// Styles
+	// Styles - clean and minimal
 	titleStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#E5E7EB")).
-		Bold(true).
-		MarginBottom(1)
+		Foreground(lipgloss.Color("#D97706")).
+		Bold(true)
 
 	selectedStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#111827")).
 		Background(lipgloss.Color("#D97706")).
-		Bold(true).
-		Padding(0, 1)
+		Bold(true)
 
 	normalStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#E5E7EB")).
-		Padding(0, 1)
+		Foreground(lipgloss.Color("#E5E7EB"))
 
 	descStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#6B7280")).
-		Italic(true)
+		Foreground(lipgloss.Color("#6B7280"))
 
 	checkStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#10B981"))
 
 	hintStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#6B7280")).
-		Italic(true)
+		Foreground(lipgloss.Color("#4B5563"))
 
 	filterStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#D97706"))
@@ -180,11 +175,11 @@ func (s *SelectionModel) View(width int) string {
 
 	// Title
 	b.WriteString(titleStyle.Render(s.Title))
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 
 	// Filter indicator
 	if s.Filter != "" {
-		b.WriteString(filterStyle.Render("Filter: " + s.Filter))
+		b.WriteString(filterStyle.Render("/" + s.Filter))
 		b.WriteString("\n\n")
 	}
 
@@ -195,18 +190,18 @@ func (s *SelectionModel) View(width int) string {
 
 		// Selection indicator
 		if i == s.Cursor {
-			line = selectedStyle.Render("› " + item.Label)
+			line = selectedStyle.Render(" > " + item.Label + " ")
 		} else {
-			prefix := "  "
+			prefix := "   "
 			if item.Selected {
-				prefix = checkStyle.Render("✓ ")
+				prefix = " " + checkStyle.Render("✓") + " "
 			}
 			line = normalStyle.Render(prefix + item.Label)
 		}
 
 		// Description
-		if item.Description != "" {
-			line += "  " + descStyle.Render(item.Description)
+		if item.Description != "" && i == s.Cursor {
+			line += " " + descStyle.Render(item.Description)
 		}
 
 		b.WriteString(line)
@@ -214,22 +209,18 @@ func (s *SelectionModel) View(width int) string {
 	}
 
 	if len(filtered) == 0 {
-		b.WriteString(descStyle.Render("  No matches found"))
+		b.WriteString(descStyle.Render("  No matches"))
 		b.WriteString("\n")
 	}
 
 	// Hints
 	b.WriteString("\n")
-	hints := []string{"↑↓ navigate", "enter select", "esc cancel"}
-	if len(s.Items) > 5 {
-		hints = append([]string{"type to filter"}, hints...)
-	}
-	b.WriteString(hintStyle.Render(strings.Join(hints, " • ")))
+	b.WriteString(hintStyle.Render("↑↓ navigate • enter select • esc close"))
 
 	// Wrap in a box
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("#D97706")).
+		BorderForeground(lipgloss.Color("#374151")).
 		Padding(1, 2).
 		Width(width - 4).
 		Render(b.String())

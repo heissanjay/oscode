@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/oscode-cli/oscode/internal/llm"
+	"github.com/heissanjay/oscode/internal/llm"
 )
 
 // Registry manages tool registration and execution

@@ -23,7 +23,7 @@ OSCode is a production-grade CLI coding agent tool inspired by Claude Code. It p
 
 ```bash
 # Clone the repository
-git clone https://github.com/oscode-cli/oscode.git
+git clone https://github.com/heissanjay/oscode.git
 cd oscode
 
 # Build
@@ -36,7 +36,7 @@ make install
 ### Using Go Install
 
 ```bash
-go install github.com/oscode-cli/oscode/cmd/oscode@latest
+go install github.com/heissanjay/oscode/cmd/oscode@latest
 ```
 
 ## Quick Start

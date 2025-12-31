@@ -8,13 +8,17 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/oscode-cli/oscode/internal/commands"
-	"github.com/oscode-cli/oscode/internal/config"
-	"github.com/oscode-cli/oscode/internal/llm"
-	"github.com/oscode-cli/oscode/internal/permissions"
-	"github.com/oscode-cli/oscode/internal/session"
-	"github.com/oscode-cli/oscode/internal/tools"
-	"github.com/oscode-cli/oscode/internal/ui"
+	"github.com/heissanjay/oscode/internal/agent"
+	"github.com/heissanjay/oscode/internal/commands"
+	"github.com/heissanjay/oscode/internal/config"
+	"github.com/heissanjay/oscode/internal/hooks"
+	"github.com/heissanjay/oscode/internal/llm"
+	"github.com/heissanjay/oscode/internal/mcp"
+	"github.com/heissanjay/oscode/internal/permissions"
+	"github.com/heissanjay/oscode/internal/prompts"
+	"github.com/heissanjay/oscode/internal/session"
+	"github.com/heissanjay/oscode/internal/tools"
+	"github.com/heissanjay/oscode/internal/ui"
 )
 
 // Options contains application startup options
@@ -30,20 +34,29 @@ type Options struct {
 
 // App is the main application
 type App struct {
-	config          *config.Config
-	options         Options
-	provider        llm.Provider
-	toolRegistry    *tools.Registry
-	sessionManager  *session.Manager
-	permManager     *permissions.Manager
-	uiModel         ui.Model
-	program         *tea.Program
+	config         *config.Config
+	options        Options
+	provider       llm.Provider
+	toolRegistry   *tools.Registry
+	sessionManager *session.Manager
+	permManager    *permissions.Manager
+	hookExecutor   *hooks.Executor
+	agentExecutor  *agent.Executor
+	mcpClient      *mcp.Client
+	uiModel        ui.Model
+	program        *tea.Program
 
 	// State
-	workDir         string
-	systemPrompt    string
-	conversation    *llm.Conversation
-	currentSession  *session.Session
+	workDir        string
+	systemPrompt   string
+	conversation   *llm.Conversation
+	currentSession *session.Session
+	inPlanMode     bool
+
+	// Permission handling
+	permissionChan     chan bool
+	permissionResponse chan ui.PermissionResponse
+	sessionAllowed     map[string]bool // Tools allowed for this session
 
 	// Context for cancellation
 	ctx    context.Context
@@ -60,13 +73,15 @@ func New(cfg *config.Config, opts Options) (*App, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	app := &App{
-		config:         cfg,
-		options:        opts,
-		workDir:        workDir,
-		ctx:            ctx,
-		cancel:         cancel,
-		conversation:   llm.NewConversation(),
-		sessionManager: session.NewManager(),
+		config:             cfg,
+		options:            opts,
+		workDir:            workDir,
+		ctx:                ctx,
+		cancel:             cancel,
+		conversation:       llm.NewConversation(),
+		sessionManager:     session.NewManager(),
+		permissionResponse: make(chan ui.PermissionResponse, 1),
+		sessionAllowed:     make(map[string]bool),
 	}
 
 	// Initialize provider
@@ -75,11 +90,20 @@ func New(cfg *config.Config, opts Options) (*App, error) {
 		return nil, err
 	}
 
+	// Initialize hooks executor
+	app.hookExecutor = hooks.NewExecutor(cfg.Hooks, workDir)
+
+	// Initialize MCP client and connect to configured servers
+	app.initMCP()
+
 	// Initialize tools
 	app.initTools()
 
 	// Initialize permissions
 	app.initPermissions()
+
+	// Initialize agent executor
+	app.initAgentExecutor()
 
 	// Build system prompt
 	app.buildSystemPrompt()
@@ -139,16 +163,32 @@ func (a *App) initTools() {
 	bashTool := tools.NewBashTool(a.workDir)
 	a.toolRegistry.Register(bashTool)
 	a.toolRegistry.Register(tools.NewBashOutputTool(bashTool))
+	a.toolRegistry.Register(tools.NewKillShellTool(bashTool))
 
 	// Register search tools
 	a.toolRegistry.Register(tools.NewGlobTool(a.workDir))
 	a.toolRegistry.Register(tools.NewGrepTool(a.workDir))
+	a.toolRegistry.Register(tools.NewCodeSearchTool(a.workDir))
+	a.toolRegistry.Register(tools.NewLSPTool(a.workDir))
 
 	// Register agent tools
 	todoTool := tools.NewTodoWriteTool(func(todos []tools.TodoItem) {
 		// Update UI with todos
 	})
 	a.toolRegistry.Register(todoTool)
+
+	// Register notebook tool
+	a.toolRegistry.Register(tools.NewNotebookEditTool(a.workDir))
+
+	// Register plan mode tools
+	planModeCallback := func(entering bool) {
+		// TODO: Implement plan mode state tracking
+	}
+	a.toolRegistry.Register(tools.NewEnterPlanModeTool(planModeCallback))
+	a.toolRegistry.Register(tools.NewExitPlanModeTool(planModeCallback))
+
+	// Register ask user question tool (callback will be wired up via UI)
+	a.toolRegistry.Register(tools.NewAskUserQuestionTool(nil))
 
 	// Set tool callbacks for UI updates
 	a.toolRegistry.SetCallbacks(
@@ -173,14 +213,120 @@ func (a *App) initPermissions() {
 	}
 
 	// Set permission callback for UI prompts
-	// For now, auto-allow all permissions to avoid blocking
-	// TODO: Implement proper async permission flow with UI
 	a.permManager.SetCallback(func(tool string, input map[string]interface{}, description string) (bool, error) {
-		// Auto-allow for now - proper permission UI requires async handling
-		return true, nil
+		// Check if this tool was already allowed for session
+		if a.sessionAllowed[tool] {
+			return true, nil
+		}
+
+		// If no UI program, auto-allow (print mode)
+		if a.program == nil {
+			return true, nil
+		}
+
+		// Build permission request with file info for diff display
+		req := &ui.PermissionRequest{
+			Tool:        tool,
+			Description: description,
+		}
+
+		// Extract file info for file operations
+		if filePath, ok := input["file_path"].(string); ok {
+			req.FilePath = filePath
+		}
+		if command, ok := input["command"].(string); ok {
+			req.Command = command
+		}
+
+		// For Edit tool, get old and new content
+		if tool == "Edit" {
+			if oldStr, ok := input["old_string"].(string); ok {
+				req.OldContent = oldStr
+				req.IsDiff = true
+			}
+			if newStr, ok := input["new_string"].(string); ok {
+				req.NewContent = newStr
+			}
+		}
+
+		// For Write tool, show the content being written
+		if tool == "Write" {
+			if content, ok := input["content"].(string); ok {
+				req.NewContent = content
+			}
+		}
+
+		// Send permission request to UI
+		a.program.Send(ui.PermissionRequestMsg{Request: req})
+
+		// Wait for response (blocking)
+		resp := <-a.permissionResponse
+
+		// Track "don't ask again" preference
+		if resp.DontAskAgain && resp.Allowed {
+			a.sessionAllowed[tool] = true
+		}
+
+		return resp.Allowed, nil
 	})
 
 	a.toolRegistry.SetPermissionChecker(a.permManager)
+}
+
+func (a *App) initMCP() {
+	a.mcpClient = mcp.NewClient()
+
+	// Connect to configured MCP servers
+	for name, serverCfg := range a.config.MCP.Servers {
+		if err := a.mcpClient.Connect(name, serverCfg); err != nil {
+			// Log warning but continue - MCP servers are optional
+			fmt.Fprintf(os.Stderr, "Warning: failed to connect to MCP server %s: %v\n", name, err)
+			continue
+		}
+	}
+
+	// Register MCP tools with the registry
+	for _, tool := range a.mcpClient.AllTools() {
+		a.toolRegistry.Register(tool)
+	}
+}
+
+func (a *App) initAgentExecutor() {
+	// Create provider map for agent executor
+	providers := make(map[string]llm.Provider)
+	providers[a.config.DefaultProvider] = a.provider
+
+	a.agentExecutor = agent.NewExecutor(
+		providers,
+		a.toolRegistry,
+		a.workDir,
+		a.config.GetModel(),
+	)
+
+	// Wire up the Task tool with the agent executor
+	taskExecutor := func(ctx context.Context, input tools.TaskInput) (*tools.TaskResult, error) {
+		agentInput := agent.TaskInput{
+			Description:  input.Description,
+			Prompt:       input.Prompt,
+			SubagentType: input.SubagentType,
+			Model:        input.Model,
+			Background:   input.Background,
+		}
+
+		result, err := a.agentExecutor.Execute(ctx, agentInput)
+		if err != nil {
+			return nil, err
+		}
+
+		return &tools.TaskResult{
+			AgentID: result.AgentID,
+			Result:  result.Result,
+			Status:  result.Status,
+		}, nil
+	}
+
+	// Register the Task tool with the executor callback
+	a.toolRegistry.Register(tools.NewTaskTool(taskExecutor))
 }
 
 func (a *App) buildSystemPrompt() {
@@ -189,34 +335,30 @@ func (a *App) buildSystemPrompt() {
 		return
 	}
 
-	// Build default system prompt
-	var sb strings.Builder
+	// Gather dynamic context
+	ctx := prompts.GatherContext(a.workDir)
 
-	sb.WriteString("You are OSCode, an AI-powered coding assistant running in a CLI environment.\n\n")
-	sb.WriteString("You help users with software engineering tasks including:\n")
-	sb.WriteString("- Writing, editing, and reviewing code\n")
-	sb.WriteString("- Debugging and fixing issues\n")
-	sb.WriteString("- Explaining code and concepts\n")
-	sb.WriteString("- Running commands and tests\n")
-	sb.WriteString("- Managing files and projects\n\n")
+	// Build comprehensive system prompt
+	builder := prompts.NewSystemPromptBuilder(a.workDir)
 
-	sb.WriteString("Guidelines:\n")
-	sb.WriteString("- Be concise and direct in your responses\n")
-	sb.WriteString("- Read files before modifying them\n")
-	sb.WriteString("- Use the available tools to complete tasks\n")
-	sb.WriteString("- Explain what you're doing when performing complex operations\n")
-	sb.WriteString("- Ask clarifying questions when requirements are unclear\n\n")
-
-	sb.WriteString(fmt.Sprintf("Working directory: %s\n", a.workDir))
-
-	// Load CLAUDE.md if exists
-	if memory := a.loadMemory(); memory != "" {
-		sb.WriteString("\n--- Project Memory (CLAUDE.md) ---\n")
-		sb.WriteString(memory)
-		sb.WriteString("\n--- End Project Memory ---\n")
+	// Set git info if available
+	if ctx.IsGitRepo {
+		builder.SetGitInfo(ctx.GitStatus, ctx.GitBranch, ctx.RecentCommits)
 	}
 
-	a.systemPrompt = sb.String()
+	// Load project memory
+	if memory := a.loadMemory(); memory != "" {
+		builder.SetProjectMemory(memory)
+	}
+
+	// Set available tools
+	toolNames := make([]string, 0)
+	for _, t := range a.toolRegistry.List() {
+		toolNames = append(toolNames, t.Name())
+	}
+	builder.SetTools(toolNames)
+
+	a.systemPrompt = builder.Build()
 }
 
 func (a *App) loadMemory() string {
@@ -374,36 +516,52 @@ func (a *App) handleSubmit(input string) tea.Cmd {
 		}
 
 		return ui.StreamDoneMsg{
-			InputTokens:  0, // Would come from response
+			InputTokens:  0,                 // Would come from response
 			OutputTokens: len(response) / 4, // Rough estimate
 		}
 	}
 }
 
-func (a *App) handlePermission(allowed bool) {
-	// This would be connected to the permission callback
+func (a *App) handlePermission(resp ui.PermissionResponse) {
+	// Send response through channel to unblock the permission callback
+	// Use blocking send since the permission callback is waiting
+	a.permissionResponse <- resp
+
+	// If user provided feedback on rejection, add it to conversation
+	if !resp.Allowed && resp.Feedback != "" {
+		a.conversation.AddUserMessage("I rejected that change. " + resp.Feedback)
+	}
 }
 
 func (a *App) handleModelChange(model string) {
 	a.config.DefaultModel = model
+	providerChanged := false
 
 	// Re-initialize provider if needed (model might be from different provider)
-	if strings.HasPrefix(model, "claude") || strings.HasPrefix(model, "claude-") {
+	if strings.HasPrefix(model, "claude") {
 		if a.config.DefaultProvider != "anthropic" {
 			a.config.DefaultProvider = "anthropic"
-			a.initProvider()
+			providerChanged = true
 		}
 	} else if strings.HasPrefix(model, "gpt") || strings.HasPrefix(model, "o1") {
 		if a.config.DefaultProvider != "openai" {
 			a.config.DefaultProvider = "openai"
-			a.initProvider()
+			providerChanged = true
 		}
+	}
+
+	if providerChanged {
+		a.initProvider()
+	}
+
+	// Update UI
+	if a.program != nil {
+		a.uiModel.SetProviderInfo(a.config.DefaultProvider, model)
 	}
 }
 
 func (a *App) handleProviderChange(provider string) {
 	a.config.DefaultProvider = provider
-	a.initProvider()
 
 	// Set default model for the provider
 	switch provider {
@@ -411,6 +569,14 @@ func (a *App) handleProviderChange(provider string) {
 		a.config.DefaultModel = "claude-sonnet-4-20250514"
 	case "openai":
 		a.config.DefaultModel = "gpt-4o"
+	}
+
+	// Re-initialize provider
+	a.initProvider()
+
+	// Update UI with new model
+	if a.program != nil {
+		a.uiModel.SetProviderInfo(provider, a.config.DefaultModel)
 	}
 }
 

@@ -4,16 +4,16 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/oscode-cli/oscode/internal/config"
+	"github.com/heissanjay/oscode/internal/config"
 )
 
 // Mode represents the permission mode
 type Mode string
 
 const (
-	ModeAuto Mode = "auto"    // Auto-accept allowed tools
-	ModeAsk  Mode = "ask"     // Ask for all tools
-	ModePlan Mode = "plan"    // Read-only mode
+	ModeAuto Mode = "auto" // Auto-accept allowed tools
+	ModeAsk  Mode = "ask"  // Ask for all tools
+	ModePlan Mode = "plan" // Read-only mode
 )
 
 // PermissionCallback is called to request user permission
