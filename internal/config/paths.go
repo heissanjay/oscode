@@ -9,8 +9,8 @@ import (
 const (
 	AppName       = "oscode"
 	ConfigFile    = "settings.json"
-	MemoryFile    = "CLAUDE.md"
-	LocalMemory   = "CLAUDE.local.md"
+	MemoryFile    = "OSCODE.md"
+	LocalMemory   = "OSCODE.local.md"
 	SessionsDir   = "sessions"
 	CommandsDir   = "commands"
 	RulesDir      = "rules"
@@ -60,7 +60,7 @@ func GetSessionsDir() string {
 	return filepath.Join(GetUserConfigDir(), SessionsDir)
 }
 
-// GetUserMemoryPath returns the path to the user's CLAUDE.md
+// GetUserMemoryPath returns the path to the user's OSCODE.md
 func GetUserMemoryPath() string {
 	return filepath.Join(GetUserConfigDir(), MemoryFile)
 }
@@ -90,9 +90,9 @@ func GetProjectLocalSettingsPath(projectDir string) string {
 	return filepath.Join(GetProjectConfigDir(projectDir), "settings.local.json")
 }
 
-// GetProjectMemoryPath returns the project's CLAUDE.md path
+// GetProjectMemoryPath returns the project's OSCODE.md path
 func GetProjectMemoryPath(projectDir string) string {
-	// Check .oscode/CLAUDE.md first, then CLAUDE.md in root
+	// Check .oscode/OSCODE.md first, then OSCODE.md in root
 	oscodeMemory := filepath.Join(GetProjectConfigDir(projectDir), MemoryFile)
 	if _, err := os.Stat(oscodeMemory); err == nil {
 		return oscodeMemory

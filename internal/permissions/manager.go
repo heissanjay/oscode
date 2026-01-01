@@ -32,13 +32,18 @@ type Manager struct {
 // NewManager creates a new permission manager
 func NewManager(cfg *config.Config) *Manager {
 	m := &Manager{
-		mode:           ModeAsk,
+		mode:           ModeAuto, // Default to auto - don't annoy users
 		ruleSet:        NewRuleSet(),
 		sessionAllowed: make(map[string]bool),
 	}
 
-	// Parse permission mode
-	switch cfg.PermissionMode {
+	// Parse permission mode - runtime flag takes priority
+	modeStr := cfg.PermissionMode
+	if modeStr == "" {
+		modeStr = cfg.Permissions.DefaultMode // Fall back to config default
+	}
+
+	switch modeStr {
 	case "auto", "acceptEdits":
 		m.mode = ModeAuto
 	case "ask":

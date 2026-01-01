@@ -123,10 +123,10 @@ func DefaultConfig() *Config {
 			},
 		},
 		Permissions: PermissionConfig{
-			Allow:       []string{"Read", "Glob", "Grep", "Task"},
-			Ask:         []string{"Bash", "Write", "Edit", "WebFetch", "WebSearch"},
+			Allow:       []string{"Read", "Glob", "Grep", "Task", "Write", "Edit", "WebFetch", "WebSearch"},
+			Ask:         []string{"Bash"},  // Only shell commands need approval
 			Deny:        []string{},
-			DefaultMode: "ask",
+			DefaultMode: "auto",  // Auto-allow safe operations
 		},
 		Hooks: HookConfig{},
 		MCP: MCPConfig{

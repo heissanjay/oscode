@@ -346,9 +346,21 @@ func (a *App) buildSystemPrompt() {
 		builder.SetGitInfo(ctx.GitStatus, ctx.GitBranch, ctx.RecentCommits)
 	}
 
-	// Load project memory
+	// Load project memory (including OSCODE.md)
+	var projectContext []string
+
+	// OSCODE.md takes priority - it's the main project context file
+	if ctx.HasOscodeMD {
+		projectContext = append(projectContext, ctx.OscodeMD)
+	}
+
+	// Also include any memory files
 	if memory := a.loadMemory(); memory != "" {
-		builder.SetProjectMemory(memory)
+		projectContext = append(projectContext, memory)
+	}
+
+	if len(projectContext) > 0 {
+		builder.SetProjectMemory(strings.Join(projectContext, "\n\n"))
 	}
 
 	// Set available tools

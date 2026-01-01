@@ -6,6 +6,7 @@ import (
 
 	"github.com/heissanjay/oscode/internal/app"
 	"github.com/heissanjay/oscode/internal/config"
+	"github.com/heissanjay/oscode/internal/setup"
 	"github.com/spf13/cobra"
 )
 
@@ -59,6 +60,21 @@ func runApp(cmd *cobra.Command, args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Check if first run / needs setup
+	if setup.NeedsSetup(cfg) {
+		result, err := setup.Run(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Setup error: %v\n", err)
+		}
+		if result.Skipped {
+			fmt.Println("Setup skipped. Run 'oscode config setup' to configure later.")
+			fmt.Println("You can also set environment variables: ANTHROPIC_API_KEY or OPENAI_API_KEY")
+		} else {
+			// Reload config after setup
+			cfg, _ = config.Load()
+		}
 	}
 
 	// Apply command line overrides
@@ -135,6 +151,25 @@ func configCmd() *cobra.Command {
 		Short: "Show configuration file path",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println(config.GetConfigPath())
+		},
+	})
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "setup",
+		Short: "Run interactive setup wizard",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return err
+			}
+			result, err := setup.Run(cfg)
+			if err != nil {
+				return err
+			}
+			if result.Skipped {
+				fmt.Println("Setup cancelled.")
+			}
+			return nil
 		},
 	})
 

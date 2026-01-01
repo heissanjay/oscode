@@ -82,7 +82,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
-		// Update component sizes - Claude Code style compact layout
+		// Update component sizes - OSCode compact layout
 		headerHeight := 1  // Single line header
 		statusHeight := 1  // Single line status
 		inputHeight := 1   // Single line input
@@ -148,19 +148,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case ToolStartMsg:
-		// Show tool start with spinner effect
-		m.AddToolMessage(msg.ToolName, "Running...", false)
+		// Show tool start with description (file path, command, etc.)
+		m.AddToolMessage(msg.ToolName, msg.Description, false)
 		return m, m.spinner.Tick
 
 	case ToolDoneMsg:
-		// Update the last tool message with result
+		// Update the last tool message with result (keep description, update status)
 		if len(m.messages) > 0 {
 			lastIdx := len(m.messages) - 1
 			if m.messages[lastIdx].Type == MessageTypeTool && m.messages[lastIdx].ToolName == msg.ToolName {
-				m.messages[lastIdx].Content = msg.Result
+				m.messages[lastIdx].Content = msg.Result // Store result/error in Content
 				m.messages[lastIdx].IsError = msg.IsError
 				m.updateViewport()
 			} else {
+				// Tool message doesn't exist, create with result as description fallback
 				m.AddToolMessage(msg.ToolName, msg.Result, msg.IsError)
 			}
 		} else {

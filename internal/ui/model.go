@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -36,11 +35,12 @@ const (
 
 // DisplayMessage represents a message to display
 type DisplayMessage struct {
-	Type      MessageType
-	Content   string
-	Timestamp time.Time
-	ToolName  string
-	IsError   bool
+	Type        MessageType
+	Content     string
+	Description string // For tools: file path, command, etc.
+	Timestamp   time.Time
+	ToolName    string
+	IsError     bool
 }
 
 // PermissionRequest represents a pending permission request
@@ -154,7 +154,7 @@ func (m *Model) updateSuggestions(filter string) {
 
 // NewModel creates a new UI model
 func NewModel() Model {
-	// Create textarea for input - single line, minimal like Claude Code
+	// Create textarea for input - single line, minimal style
 	ta := textarea.New()
 	ta.Placeholder = "Type a message..."
 	ta.Prompt = ""
@@ -175,9 +175,9 @@ func NewModel() Model {
 	ta.BlurredStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF"))
 	ta.Focus()
 
-	// Create Claude sparkle spinner - the magical thinking animation
+	// Create OSCode sparkle spinner - the magical thinking animation
 	s := spinner.New()
-	s.Spinner = ClaudeSpinner()
+	s.Spinner = OsCodeSpinner()
 	s.Style = ToolSpinnerStyle
 
 	// Create viewport for messages
@@ -328,13 +328,14 @@ func (m *Model) AddAssistantMessage(content string) {
 }
 
 // AddToolMessage adds a tool execution message
-func (m *Model) AddToolMessage(toolName, content string, isError bool) {
+func (m *Model) AddToolMessage(toolName, description string, isError bool) {
 	m.AddMessage(DisplayMessage{
-		Type:      MessageTypeTool,
-		Content:   content,
-		ToolName:  toolName,
-		IsError:   isError,
-		Timestamp: time.Now(),
+		Type:        MessageTypeTool,
+		Content:     "",
+		Description: description, // File path, command, etc.
+		ToolName:    toolName,
+		IsError:     isError,
+		Timestamp:   time.Now(),
 	})
 }
 
@@ -440,53 +441,54 @@ func (m *Model) updateViewport() {
 func (m *Model) renderMessages() string {
 	var sb strings.Builder
 
-	// Clean, minimal styles inspired by Claude Code
-	dimStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280"))
-
-	// User: bold orange prompt, white text
-	userLabelStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#D97706")).
-		Bold(true)
-	userTextStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#F9FAFB"))
-
-	// Assistant: clean white text, no label
-	assistantStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#E5E7EB"))
-
-	// Tools: very compact, single line, dim
-	toolStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#6B7280"))
-	toolIconSuccess := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981")).Render("●")
-	toolIconError := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render("●")
-	toolIconRunning := lipgloss.NewStyle().Foreground(lipgloss.Color("#D97706")).Render("○")
-
-	// System: italic, dim
-	systemStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#9CA3AF")).
-		Italic(true)
-
-	// Error: red
-	errorStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#EF4444"))
-
 	// Group consecutive tool messages
 	var pendingTools []DisplayMessage
 	flushTools := func() {
 		if len(pendingTools) == 0 {
 			return
 		}
-		// Render tools as a compact block
+		// Render tools as a compact block with icons and details
 		for _, tool := range pendingTools {
 			var icon string
-			if tool.Content == "Running..." {
-				icon = toolIconRunning
+			var iconStyle lipgloss.Style
+			// Empty Content means still running, non-empty means completed
+			if tool.Content == "" {
+				icon = "○"
+				iconStyle = ToolSpinnerStyle
 			} else if tool.IsError {
-				icon = toolIconError
+				icon = IconError
+				iconStyle = ToolErrorStyle
 			} else {
-				icon = toolIconSuccess
+				icon = IconSuccess
+				iconStyle = ToolSuccessStyle
 			}
-			sb.WriteString(toolStyle.Render(fmt.Sprintf("  %s %s", icon, tool.ToolName)))
+			sb.WriteString("  ")
+			sb.WriteString(iconStyle.Render(icon))
+			sb.WriteString(" ")
+			sb.WriteString(ToolNameStyle.Render(tool.ToolName))
+
+			// Always show description (file path, command) if available
+			if tool.Description != "" {
+				detail := tool.Description
+				if idx := strings.Index(detail, "\n"); idx > 0 {
+					detail = detail[:idx]
+				}
+				if len(detail) > 60 {
+					detail = detail[:57] + "..."
+				}
+				sb.WriteString(" ")
+				sb.WriteString(TextMutedStyle.Render(detail))
+			}
+
+			// Show error message if present
+			if tool.IsError && tool.Content != "" {
+				sb.WriteString("\n    ")
+				errDetail := tool.Content
+				if len(errDetail) > 80 {
+					errDetail = errDetail[:77] + "..."
+				}
+				sb.WriteString(ErrorStyle.Render(errDetail))
+			}
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
@@ -497,16 +499,16 @@ func (m *Model) renderMessages() string {
 		switch msg.Type {
 		case MessageTypeUser:
 			flushTools()
-			sb.WriteString(userLabelStyle.Render("You"))
-			sb.WriteString(dimStyle.Render(": "))
-			sb.WriteString(userTextStyle.Render(msg.Content))
+			// User messages with subtle dark background (no label - like Claude Code)
+			userStyle := UserMessageStyle.Width(m.viewport.Width - 2)
+			sb.WriteString(userStyle.Render(msg.Content))
 			sb.WriteString("\n\n")
 
 		case MessageTypeAssistant:
 			flushTools()
-			// Render markdown for assistant messages
+			// Assistant messages - just markdown, no label (like Claude Code)
 			rendered := RenderMarkdown(msg.Content, m.viewport.Width)
-			sb.WriteString(assistantStyle.Render(rendered))
+			sb.WriteString(rendered)
 			sb.WriteString("\n\n")
 
 		case MessageTypeTool:
@@ -514,12 +516,12 @@ func (m *Model) renderMessages() string {
 
 		case MessageTypeSystem:
 			flushTools()
-			sb.WriteString(systemStyle.Render(msg.Content))
+			sb.WriteString(SystemMessageStyle.Render(msg.Content))
 			sb.WriteString("\n\n")
 
 		case MessageTypeError:
 			flushTools()
-			sb.WriteString(errorStyle.Render("Error: " + msg.Content))
+			sb.WriteString(RenderError(msg.Content))
 			sb.WriteString("\n\n")
 		}
 	}
@@ -527,13 +529,12 @@ func (m *Model) renderMessages() string {
 	// Flush any remaining tools
 	flushTools()
 
-	// Add streaming content with cursor
+	// Add streaming content with cursor (no label - like Claude Code)
 	if m.isStreaming && m.streamingContent != "" {
-		rendered := RenderMarkdown(m.streamingContent, m.viewport.Width)
-		sb.WriteString(assistantStyle.Render(rendered))
-		sb.WriteString(lipgloss.NewStyle().
-			Foreground(lipgloss.Color("#D97706")).
-			Render("▌"))
+		rendered := RenderMarkdownStreaming(m.streamingContent, m.viewport.Width)
+		sb.WriteString(rendered)
+		// Blinking cursor indicator
+		sb.WriteString(ToolSpinnerStyle.Render("▌"))
 		sb.WriteString("\n")
 	}
 

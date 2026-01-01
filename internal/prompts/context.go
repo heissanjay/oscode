@@ -10,11 +10,13 @@ import (
 
 // Context holds dynamic context information
 type Context struct {
-	WorkDir       string
-	GitBranch     string
-	GitStatus     string
-	RecentCommits string
-	IsGitRepo     bool
+	WorkDir        string
+	GitBranch      string
+	GitStatus      string
+	RecentCommits  string
+	IsGitRepo      bool
+	OscodeMD       string // Contents of OSCODE.md if present
+	HasOscodeMD    bool
 }
 
 // GatherContext collects dynamic context from the environment
@@ -30,7 +32,28 @@ func GatherContext(workDir string) *Context {
 		ctx.gatherGitInfo(workDir)
 	}
 
+	// Load OSCODE.md if present
+	ctx.loadOscodeMD(workDir)
+
 	return ctx
+}
+
+// loadOscodeMD loads the OSCODE.md project context file if it exists
+func (c *Context) loadOscodeMD(workDir string) {
+	// Try multiple locations: root, .oscode/, docs/
+	locations := []string{
+		filepath.Join(workDir, "OSCODE.md"),
+		filepath.Join(workDir, ".oscode", "OSCODE.md"),
+		filepath.Join(workDir, "docs", "OSCODE.md"),
+	}
+
+	for _, path := range locations {
+		if content, err := os.ReadFile(path); err == nil {
+			c.OscodeMD = string(content)
+			c.HasOscodeMD = true
+			return
+		}
+	}
 }
 
 func (c *Context) gatherGitInfo(workDir string) {

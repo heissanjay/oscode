@@ -68,7 +68,7 @@ func (b *SystemPromptBuilder) Build() string {
 }
 
 func (b *SystemPromptBuilder) buildIdentity() string {
-	return `You are Claude Code, an agentic coding assistant. You help users with software engineering tasks including writing code, debugging, refactoring, explaining code, and more.
+	return `You are OSCode, an agentic coding assistant. You help users with software engineering tasks including writing code, debugging, refactoring, explaining code, and more.
 
 You have access to powerful tools for reading, writing, searching, and executing code. Use these tools effectively to assist users.
 

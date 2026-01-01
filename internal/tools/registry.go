@@ -210,9 +210,10 @@ func (e *Executor) Execute(ctx context.Context, name string, input json.RawMessa
 		}
 	}
 
-	// Notify start
+	// Notify start - extract meaningful description from input
 	if e.onToolStart != nil {
-		e.onToolStart(name, tool.Description())
+		desc := getToolDescription(name, inputMap)
+		e.onToolStart(name, desc)
 	}
 
 	// Execute tool
@@ -227,6 +228,41 @@ func (e *Executor) Execute(ctx context.Context, name string, input json.RawMessa
 	}
 
 	return result, nil
+}
+
+// getToolDescription extracts a meaningful description from tool input
+func getToolDescription(toolName string, input map[string]interface{}) string {
+	switch toolName {
+	case "Read", "Write", "Edit":
+		if path, ok := input["file_path"].(string); ok {
+			return path
+		}
+	case "Glob":
+		if pattern, ok := input["pattern"].(string); ok {
+			return pattern
+		}
+	case "Grep":
+		if pattern, ok := input["pattern"].(string); ok {
+			return pattern
+		}
+	case "Bash":
+		if cmd, ok := input["command"].(string); ok {
+			// Truncate long commands
+			if len(cmd) > 60 {
+				return cmd[:57] + "..."
+			}
+			return cmd
+		}
+	case "WebFetch":
+		if url, ok := input["url"].(string); ok {
+			return url
+		}
+	case "WebSearch":
+		if query, ok := input["query"].(string); ok {
+			return query
+		}
+	}
+	return ""
 }
 
 // DefaultRegistry is the global tool registry

@@ -8,9 +8,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Claude Code Color Palette
+// OSCode Color Palette
 var (
-	// Primary Brand Color - "Crail" (Claude's signature orange)
+	// Primary Brand Color - "Crail" (OSCode's signature orange)
 	ColorCrail = lipgloss.Color("#C15F3C")
 
 	// Secondary/Info - "Cloudy" (for metadata, timestamps)
@@ -45,8 +45,8 @@ var (
 	ColorBorder = lipgloss.Color("#44403C")
 )
 
-// Claude Sparkle Spinner - the magical thinking animation
-func ClaudeSpinner() spinner.Spinner {
+// OSCode Sparkle Spinner - the magical thinking animation
+func OsCodeSpinner() spinner.Spinner {
 	return spinner.Spinner{
 		Frames: []string{"✢", "✶", "✻", "✽", "※", "✽", "✻", "✶"},
 		FPS:    time.Second / 10, // Slow, deliberate pulse
@@ -80,8 +80,8 @@ func GetSpinnerVerb(action string) string {
 
 // === STYLES ===
 
-// Claude Label Style - Bold brand name
-var ClaudeLabelStyle = lipgloss.NewStyle().
+// Brand Label Style - Bold brand name
+var BrandLabelStyle = lipgloss.NewStyle().
 	Foreground(ColorCrail).
 	Bold(true)
 
@@ -124,9 +124,13 @@ var (
 
 // Message Styles
 var (
+	// User message with subtle dark background (no label)
 	UserMessageStyle = lipgloss.NewStyle().
-				Foreground(ColorTextPrimary)
+				Background(lipgloss.Color("#2D2D2D")).
+				Foreground(ColorTextPrimary).
+				Padding(0, 1)
 
+	// Assistant message - plain text, no label
 	AssistantMessageStyle = lipgloss.NewStyle().
 				Foreground(ColorTextPrimary)
 
@@ -336,9 +340,9 @@ const (
 
 // === HELPER FUNCTIONS ===
 
-// RenderClaudeLabel renders the "Claude" sender label
-func RenderClaudeLabel() string {
-	return ClaudeLabelStyle.Render("Claude")
+// RenderBrandLabel renders the "OSCode" sender label
+func RenderBrandLabel() string {
+	return BrandLabelStyle.Render("OSCode")
 }
 
 // RenderUserLabel renders the "You" sender label
@@ -452,7 +456,7 @@ func RenderPermissionOption(key, label, desc string, selected bool) string {
 
 // RenderWelcome renders the welcome screen
 func RenderWelcome() string {
-	title := ClaudeLabelStyle.Render("Claude Code")
+	title := BrandLabelStyle.Render("OSCode")
 	subtitle := TextMutedStyle.Render("What can I help you with?")
 
 	return lipgloss.JoinVertical(
@@ -499,7 +503,7 @@ func RenderHelp() string {
 		{"/help", "Show help"},
 		{"/clear", "Clear conversation"},
 		{"/model", "Switch model"},
-		{"/init", "Create CLAUDE.md"},
+		{"/init", "Create OSCODE.md"},
 		{"/compact", "Compact conversation"},
 		{"/review", "Code review mode"},
 		{"/exit", "Exit"},

@@ -117,7 +117,7 @@ func RegisterBuiltinCommands() {
 
 	Register(&Command{
 		Name:        "init",
-		Description: "Initialize project with CLAUDE.md",
+		Description: "Initialize project with OSCODE.md",
 		Usage:       "/init",
 		Handler:     handleInit,
 	})
@@ -135,6 +135,13 @@ func RegisterBuiltinCommands() {
 		Description: "List background tasks",
 		Usage:       "/bashes",
 		Handler:     handleBashes,
+	})
+
+	Register(&Command{
+		Name:        "setup",
+		Description: "Reconfigure API keys and provider",
+		Usage:       "/setup",
+		Handler:     handleSetup,
 	})
 }
 
@@ -288,14 +295,14 @@ func handleInit(ctx *Context, args string) error {
 	if err != nil {
 		return err
 	}
-	
-	path := filepath.Join(cwd, "CLAUDE.md")
+
+	path := filepath.Join(cwd, "OSCODE.md")
 	if _, err := os.Stat(path); err == nil {
-		ctx.PrintError("CLAUDE.md already exists.")
+		ctx.PrintError("OSCODE.md already exists.")
 		return nil
 	}
-	
-	content := `# CLAUDE.md - Project Context
+
+	content := `# OSCODE.md - Project Context
 
 ## Overview
 Describe your project here. What is it? What does it do?
@@ -319,7 +326,7 @@ Describe your project here. What is it? What does it do?
 		return err
 	}
 	
-	ctx.Print("✓ Created CLAUDE.md\n")
+	ctx.Print("✓ Created OSCODE.md\n")
 	return nil
 }
 
@@ -332,6 +339,12 @@ func handleTodos(ctx *Context, args string) error {
 func handleBashes(ctx *Context, args string) error {
 	ctx.Print("Background tasks:\n")
 	ctx.Print("(No background tasks running)\n")
+	return nil
+}
+
+func handleSetup(ctx *Context, args string) error {
+	ctx.Print("To run setup, exit and run: oscode config setup\n")
+	ctx.Print("Or set environment variables: ANTHROPIC_API_KEY or OPENAI_API_KEY\n")
 	return nil
 }
 
